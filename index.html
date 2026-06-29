@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="theme-color" content="#6366f1"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Finance"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="apple-touch-icon" href="icon-192.png"/>
+  <title>Finance Tracker</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body, #root { height: 100%; background: #0f0f1a; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; overscroll-behavior: none; }
+    input, select, textarea, button { font-family: inherit; }
+    /* Safe area for iPhone notch/home bar */
+    #root { padding-bottom: env(safe-area-inset-bottom); }
+    /* Scrollbar hidden on mobile */
+    ::-webkit-scrollbar { display: none; }
+    /* Install prompt */
+    #install-banner { display:none; position:fixed; bottom:80px; left:16px; right:16px; background:linear-gradient(135deg,#4c1d95,#312e81); border:1px solid #6366f1; border-radius:12px; padding:14px 16px; z-index:1000; flex-direction:row; align-items:center; gap:12px; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
+    #install-banner.show { display:flex; }
+    #install-banner p { color:#e2e8f0; font-size:13px; flex:1; line-height:1.4; }
+    #install-banner button { background:linear-gradient(135deg,#6366f1,#8b5cf6); border:none; border-radius:8px; color:#fff; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+    #install-dismiss { background:transparent!important; color:#818cf8!important; padding:4px 8px!important; font-size:18px!important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Install banner -->
+  <div id="install-banner">
+    <p>📲 Install Finance Tracker as an app on your phone</p>
+    <button id="install-btn">Install</button>
+    <button id="install-dismiss" class="">✕</button>
+  </div>
+
+  <!-- React + Babel + Recharts via CDN -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <script>
+    // PWA install prompt
+    let deferredPrompt;
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      deferredPrompt = e;
+      document.getElementById('install-banner').classList.add('show');
+    });
+    document.getElementById('install-btn')?.addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      deferredPrompt = null;
+      document.getElementById('install-banner').classList.remove('show');
+    });
+    document.getElementById('install-dismiss')?.addEventListener('click', () => {
+      document.getElementById('install-banner').classList.remove('show');
+    });
+
+    // Service worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+    }
+  </script>
+
+  <script type="text/babel">
+    // Destructure React hooks
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // Destructure Recharts
+    const { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
+            ResponsiveContainer, LineChart, Line } = Recharts;
+
+
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const ALL_CURRENCIES = {
+  INR:{ symbol:"₹", name:"Indian Rupee",    rateToUSD:0.012 },
+  GBP:{ symbol:"£", name:"British Pound",   rateToUSD:1.27  },
+  USD:{ symbol:"$", name:"US Dollar",       rateToUSD:1     },
+  EUR:{ symbol:"€", name:"Euro",            rateToUSD:1.08  },
+  AED:{ symbol:"د.إ",name:"UAE Dirham",     rateToUSD:0.272 },
+  SGD:{ symbol:"S$",name:"Singapore Dollar",rateToUSD:0.74  },
+  JPY:{ symbol:"¥", name:"Japanese Yen",    rateToUSD:0.0067},
+  CAD:{ symbol:"C$",name:"Canadian Dollar", rateToUSD:0.73  },
+  AUD:{ symbol:"A$",name:"Australian Dollar",rateToUSD:0.65 },
+  CHF:{ symbol:"Fr",name:"Swiss Franc",     rateToUSD:1.11  },
+};
+// Legacy rate map for display currency conversion (relative to INR base)
+const CURRENCY = {
+  INR:{ symbol:"₹", rate:1      },
+  GBP:{ symbol:"£", rate:0.0096 },
+  USD:{ symbol:"$", rate:0.012  },
+  EUR:{ symbol:"€", rate:0.011  },
+  AED:{ symbol:"د.إ",rate:0.044 },
+};
+
+const CATEGORIES  = ["Housing","Food","Transport","Health","Leisure","Clothing","Education","Baby","Other"];
+const CAT_COLORS  = ["#6366f1","#22c55e","#38bdf8","#f43f5e","#a78bfa","#f472b6","#facc15","#fb923c","#818cf8"];
+const INV_COLORS  = ["#38bdf8","#a78bfa","#34d399","#fb923c","#f472b6","#facc15","#60a5fa","#4ade80"];
+const FREQ_LABELS = { monthly:"Monthly", weekly:"Weekly", yearly:"Yearly" };
+const STORAGE_KEY = "richfinance_v4";
+
+const fmt = (amount, cur) => {
+  const c = CURRENCY[cur] || { symbol:"₹", rate:1 };
+  return `${c.symbol}${(amount * c.rate).toLocaleString("en-GB",{minimumFractionDigits:0,maximumFractionDigits:0})}`;
+};
+const todayDate  = () => new Date().toISOString().slice(0,10);
+const todayMonth = () => new Date().toISOString().slice(0,7);
+const shortDate  = d => { if(!d)return""; const[y,m,day]=d.split("-"); return`${day}/${m}/${y.slice(2)}`; };
+const catColor   = cat => CAT_COLORS[CATEGORIES.indexOf(cat)] ?? "#818cf8";
+
+const defaultData = {
+  currency:"INR",
+  income:[], expenses:[], savingsGoals:[], investments:[],
+  budgetLimits:{},
+  recurring:[],         // recurring expenses
+  recurringIncome:[],   // recurring income { id, source, amount, frequency, notes }
+  investmentNotes:{},
+};
+
+// ── SHARED STYLES ─────────────────────────────────────────────────────────────
+const B = {
+  card:      { background:"#1a1a2e", border:"1px solid #2d2b55", borderRadius:12, padding:16, marginBottom:12 },
+  cardTitle: { fontSize:11, fontWeight:600, color:"#6366f1", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:12 },
+  input:     { width:"100%", background:"#12122a", border:"1px solid #312e81", borderRadius:8, color:"#e2e8f0", padding:"9px 12px", fontSize:13, outline:"none", boxSizing:"border-box", marginBottom:8 },
+  select:    { width:"100%", background:"#12122a", border:"1px solid #312e81", borderRadius:8, color:"#e2e8f0", padding:"9px 12px", fontSize:13, outline:"none", boxSizing:"border-box", marginBottom:8 },
+  btn:       { width:"100%", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", border:"none", borderRadius:8, color:"#fff", padding:"10px", fontSize:13, fontWeight:600, cursor:"pointer" },
+  delBtn:    { background:"transparent", border:"none", color:"#4f46e5", fontSize:18, cursor:"pointer", padding:"0 4px", lineHeight:1 },
+  badge:     col => ({ display:"inline-block", background:col+"22", color:col, borderRadius:4, padding:"2px 7px", fontSize:11, fontWeight:600 }),
+  row:       { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:"1px solid #1e1b4b" },
+  row2:      { display:"flex", gap:8 },
+  stat:      col => ({ background:"#12122a", border:`1px solid ${col}22`, borderRadius:10, padding:"12px 14px" }),
+  statLabel: { fontSize:10, color:"#818cf8", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 },
+  statValue: col => ({ fontSize:20, fontWeight:700, color:col }),
+  textarea:  { width:"100%", background:"#12122a", border:"1px solid #312e81", borderRadius:8, color:"#e2e8f0", padding:"9px 12px", fontSize:13, outline:"none", boxSizing:"border-box", marginBottom:8, resize:"vertical", minHeight:72, fontFamily:"inherit" },
+};
+
+// ── CURRENCY CONVERTER ────────────────────────────────────────────────────────
+function CurrencyConverter() {
+  const [amount,  setAmount]  = useState("1000");
+  const [from,    setFrom]    = useState("INR");
+  const [to,      setTo]      = useState("GBP");
+
+  const fromRate = ALL_CURRENCIES[from]?.rateToUSD || 1;
+  const toRate   = ALL_CURRENCIES[to]?.rateToUSD   || 1;
+  const result   = amount ? ((parseFloat(amount) * fromRate) / toRate) : 0;
+
+  const sym = c => ALL_CURRENCIES[c]?.symbol || "";
+  const swap = () => { setFrom(to); setTo(from); };
+
+  const pairs = [
+    ["INR","GBP"],["INR","USD"],["INR","EUR"],["INR","AED"],["GBP","USD"],["GBP","EUR"],
+  ];
+
+  return (
+    <div style={B.card}>
+      <div style={B.cardTitle}>💱 Currency Converter</div>
+
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>Amount</div>
+          <input style={{...B.input,marginBottom:0,fontSize:18,fontWeight:600}} type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0"/>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>From</div>
+          <select style={{...B.select,marginBottom:0}} value={from} onChange={e=>setFrom(e.target.value)}>
+            {Object.entries(ALL_CURRENCIES).map(([k,v])=><option key={k} value={k}>{k} — {v.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <button onClick={swap} style={{width:"100%",background:"#12122a",border:"1px solid #312e81",borderRadius:8,color:"#818cf8",padding:"8px",fontSize:13,cursor:"pointer",marginBottom:12}}>
+        ⇅ Swap currencies
+      </button>
+
+      <div style={{flex:1,marginBottom:16}}>
+        <div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>To</div>
+        <select style={{...B.select,marginBottom:0}} value={to} onChange={e=>setTo(e.target.value)}>
+          {Object.entries(ALL_CURRENCIES).map(([k,v])=><option key={k} value={k}>{k} — {v.name}</option>)}
+        </select>
+      </div>
+
+      {amount && (
+        <div style={{background:"linear-gradient(135deg,#1e1032,#1a1a2e)",border:"1px solid #4c1d95",borderRadius:12,padding:16,textAlign:"center",marginBottom:12}}>
+          <div style={{fontSize:13,color:"#818cf8",marginBottom:4}}>{parseFloat(amount).toLocaleString()} {from} =</div>
+          <div style={{fontSize:28,fontWeight:700,color:"#a78bfa"}}>{sym(to)}{result.toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+          <div style={{fontSize:11,color:"#6366f1",marginTop:4}}>1 {from} = {sym(to)}{(fromRate/toRate).toFixed(4)} {to}</div>
+        </div>
+      )}
+
+      <div style={{fontSize:11,color:"#6366f1",marginBottom:6,fontWeight:600}}>Quick pairs</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+        {pairs.map(([f,t])=>{
+          const r = (ALL_CURRENCIES[f].rateToUSD / ALL_CURRENCIES[t].rateToUSD);
+          return (
+            <button key={f+t} onClick={()=>{setFrom(f);setTo(t);}} style={{background:"#12122a",border:"1px solid #312e81",borderRadius:8,color:"#c4b5fd",padding:"8px 10px",fontSize:11,cursor:"pointer",textAlign:"left"}}>
+              <div style={{fontWeight:600}}>{f} → {t}</div>
+              <div style={{color:"#6366f1",fontSize:10,marginTop:2}}>1 {f} = {ALL_CURRENCIES[t].symbol}{r.toFixed(4)}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{fontSize:10,color:"#4f46e5",marginTop:8,textAlign:"center"}}>Rates are approximate — verify for transactions</div>
+    </div>
+  );
+}
+
+// ── NET WORTH TRACKER ─────────────────────────────────────────────────────────
+function NetWorthTracker({ data, currency }) {
+  const totalPortfolio = data.investments.reduce((sum,inv)=>{
+    const s=[...(inv.snapshots||[])].sort((a,b)=>b.date.localeCompare(a.date));
+    return sum+(s[0]?.value||0);
+  },0);
+  const totalSaved   = data.savingsGoals.reduce((a,g)=>a+(g.saved||0),0);
+  const last6months  = [];
+  for(let i=5;i>=0;i--){ const d=new Date(); d.setMonth(d.getMonth()-i); last6months.push(d.toISOString().slice(0,7)); }
+  const totalNetSaved = last6months.reduce((sum,m)=>{
+    const inc = data.income.filter(x=>x.month===m).reduce((a,b)=>a+b.amount,0);
+    const exp = data.expenses.filter(x=>x.month===m).reduce((a,b)=>a+b.amount,0);
+    return sum + Math.max(0,inc-exp);
+  },0);
+
+  const netWorth    = totalPortfolio + totalSaved;
+  const rate        = CURRENCY[currency]?.rate || 1;
+  const sym         = CURRENCY[currency]?.symbol || "₹";
+
+  const components = [
+    { label:"Investment Portfolio", value:totalPortfolio, color:"#38bdf8", icon:"📈" },
+    { label:"Savings Goals (saved)", value:totalSaved,   color:"#22c55e", icon:"🎯" },
+    { label:"Net saved (6 months)",  value:totalNetSaved, color:"#a78bfa", icon:"💰", note:"surplus income" },
+  ].filter(x=>x.value>0);
+
+  const chartData = components.map(c=>({name:c.label.split(" ")[0],value:Math.round(c.value*rate)}));
+
+  return (
+    <div style={B.card}>
+      <div style={B.cardTitle}>💎 Net Worth Snapshot</div>
+      <div style={{textAlign:"center",padding:"8px 0 16px"}}>
+        <div style={{fontSize:11,color:"#818cf8",marginBottom:4}}>TOTAL TRACKED NET WORTH</div>
+        <div style={{fontSize:32,fontWeight:700,color:"#a78bfa"}}>{sym}{Math.round(netWorth*rate).toLocaleString()}</div>
+        <div style={{fontSize:11,color:"#6366f1",marginTop:4}}>Investments + Savings goals</div>
+      </div>
+
+      {components.length>0 && (
+        <ResponsiveContainer width="100%" height={140}>
+          <BarChart data={chartData} barSize={28}>
+            <XAxis dataKey="name" tick={{fill:"#6366f1",fontSize:10}} axisLine={false} tickLine={false}/>
+            <YAxis hide/>
+            <Tooltip contentStyle={{background:"#1a1a2e",border:"1px solid #312e81",borderRadius:8,color:"#e2e8f0",fontSize:12}} formatter={v=>`${sym}${v.toLocaleString()}`}/>
+            <Bar dataKey="value" radius={[4,4,0,0]}>
+              {chartData.map((_,i)=><Cell key={i} fill={components[i]?.color||"#6366f1"}/>)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+
+      <div style={{marginTop:8}}>
+        {components.map((c,i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #1e1b4b"}}>
+            <span style={{fontSize:16}}>{c.icon}</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,color:"#e2e8f0"}}>{c.label}</div>
+              {c.note&&<div style={{fontSize:11,color:"#6366f1"}}>{c.note}</div>}
+            </div>
+            <div style={{fontWeight:700,color:c.color,fontSize:14}}>{sym}{Math.round(c.value*rate).toLocaleString()}</div>
+          </div>
+        ))}
+        {components.length===0 && <div style={{color:"#4f46e5",fontSize:13,textAlign:"center",padding:12}}>Add investments or savings goals to see your net worth</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── BUDGET LIMITS ─────────────────────────────────────────────────────────────
+function BudgetLimits({ data, currency, onSave }) {
+  const [limits, setLimits] = useState(data.budgetLimits || {});
+  const thisMonth = todayMonth();
+
+  const spentByCat = {};
+  CATEGORIES.forEach(cat => {
+    spentByCat[cat] = data.expenses.filter(e=>e.category===cat&&e.month===thisMonth).reduce((a,b)=>a+b.amount,0);
+  });
+
+  const update = (cat, val) => {
+    const next = {...limits};
+    if(!val) delete next[cat]; else next[cat]=parseFloat(val);
+    setLimits(next);
+    onSave(next);
+  };
+
+  const sym = CURRENCY[currency]?.symbol || "₹";
+  const rate = CURRENCY[currency]?.rate || 1;
+
+  return (
+    <div style={B.card}>
+      <div style={B.cardTitle}>🎯 Monthly Budget Limits</div>
+      <div style={{fontSize:12,color:"#6366f1",marginBottom:12}}>Set a spending cap per category. Shown in your base currency (INR).</div>
+      {CATEGORIES.map(cat => {
+        const spent  = spentByCat[cat] || 0;
+        const limit  = limits[cat];
+        const pct    = limit ? Math.round((spent/limit)*100) : null;
+        const over   = pct !== null && pct > 100;
+        const warn   = pct !== null && pct >= 80 && !over;
+        return (
+          <div key={cat} style={{marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <div style={{width:8,height:8,borderRadius:2,background:catColor(cat),flexShrink:0}}/>
+                <span style={{fontSize:13,color:"#e2e8f0"}}>{cat}</span>
+                {over && <span style={{fontSize:10,color:"#f43f5e",fontWeight:700}}>OVER</span>}
+                {warn && <span style={{fontSize:10,color:"#fb923c",fontWeight:700}}>80%+</span>}
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                {limit && <span style={{fontSize:11,color:over?"#f43f5e":warn?"#fb923c":"#818cf8"}}>{sym}{Math.round(spent*rate).toLocaleString()} / {sym}{Math.round(limit*rate).toLocaleString()}</span>}
+                {!limit && spent>0 && <span style={{fontSize:11,color:"#818cf8"}}>{sym}{Math.round(spent*rate).toLocaleString()} spent</span>}
+              </div>
+            </div>
+            {pct!==null && (
+              <div style={{height:4,background:"#1e1b4b",borderRadius:2,overflow:"hidden",marginBottom:6}}>
+                <div style={{width:`${Math.min(pct,100)}%`,height:"100%",background:over?"#f43f5e":warn?"#fb923c":"linear-gradient(90deg,#6366f1,#a78bfa)",borderRadius:2}}/>
+              </div>
+            )}
+            <input
+              style={{...B.input,marginBottom:0,fontSize:12,padding:"6px 10px"}}
+              type="number" placeholder={`Limit (INR) — leave blank for no cap`}
+              value={limits[cat]||""} onChange={e=>update(cat,e.target.value)}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── RECURRING EXPENSES ────────────────────────────────────────────────────────
+function RecurringExpenses({ data, currency, onAdd, onDelete, onLogNow }) {
+  const [form, setForm] = useState({name:"",amount:"",category:"Housing",frequency:"monthly",notes:""});
+
+  const add = () => {
+    if(!form.name||!form.amount) return;
+    const next = { id:Date.now(), ...form, amount:parseFloat(form.amount), nextDue:todayMonth() };
+    onAdd(next);
+    setForm({name:"",amount:"",category:"Housing",frequency:"monthly",notes:""});
+  };
+
+  const sym  = CURRENCY[currency]?.symbol || "₹";
+  const rate = CURRENCY[currency]?.rate || 1;
+
+  return (<>
+    <div style={B.card}>
+      <div style={B.cardTitle}>🔁 Add Recurring Expense</div>
+      <input style={B.input} placeholder="Name (e.g. Rent, Netflix, Gym)" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/>
+      <div style={B.row2}>
+        <input style={{...B.input,flex:1}} placeholder="Amount (INR)" type="number" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})}/>
+        <select style={{...B.select,flex:1}} value={form.frequency} onChange={e=>setForm({...form,frequency:e.target.value})}>
+          <option value="monthly">Monthly</option>
+          <option value="weekly">Weekly</option>
+          <option value="yearly">Yearly</option>
+        </select>
+      </div>
+      <select style={B.select} value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>
+        {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+      </select>
+      <textarea style={B.textarea} placeholder="Notes (optional)" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
+      <button style={B.btn} onClick={add}>Add Recurring</button>
+    </div>
+
+    {data.recurring.length===0 && <div style={{...B.card,color:"#4f46e5",fontSize:13}}>No recurring expenses yet. Add rent, subscriptions, utilities above.</div>}
+
+    {data.recurring.map(r=>(
+      <div key={r.id} style={B.card}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+          <div>
+            <div style={{fontSize:14,fontWeight:600,color:"#c4b5fd"}}>{r.name}</div>
+            <div style={{fontSize:11,color:"#6366f1",marginTop:2}}>
+              <span style={B.badge(catColor(r.category))}>{r.category}</span>
+              <span style={{marginLeft:6,color:"#818cf8"}}>{FREQ_LABELS[r.frequency]}</span>
+            </div>
+            {r.notes&&<div style={{fontSize:11,color:"#4f46e5",marginTop:4}}>{r.notes}</div>}
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontWeight:700,color:"#f43f5e",fontSize:15}}>{sym}{Math.round(r.amount*rate).toLocaleString()}</div>
+            <button style={B.delBtn} onClick={()=>onDelete(r.id)}>×</button>
+          </div>
+        </div>
+        <button onClick={()=>onLogNow(r)}
+          style={{marginTop:10,width:"100%",background:"#12122a",border:"1px solid #6366f1",borderRadius:7,color:"#a78bfa",padding:"7px",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+          ✓ Log as expense this month
+        </button>
+      </div>
+    ))}
+  </>);
+}
+
+// ── EXPORT ────────────────────────────────────────────────────────────────────
+function ExportPanel({ data }) {
+  const [status, setStatus] = useState("");
+
+  const toCSV = (rows, headers) => {
+    const escape = v => `"${String(v).replace(/"/g,'""')}"`;
+    return [headers.map(escape).join(","), ...rows.map(r=>headers.map(h=>escape(r[h]??(""))).join(","))].join("\n");
+  };
+
+  const download = (content, filename, mime) => {
+    const blob = new Blob([content],{type:mime});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a"); a.href=url; a.download=filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportExpenses = () => {
+    const rows = data.expenses.map(e=>({
+      Date: e.date||e.month+"-01", Month:e.month, Merchant:e.merchant||"", Item:e.item||e.note||"",
+      Category:e.category, "Amount (INR)":e.amount,
+    }));
+    download(toCSV(rows,["Date","Month","Merchant","Item","Category","Amount (INR)"]), "expenses.csv","text/csv");
+    setStatus("✓ Expenses exported");
+  };
+
+  const exportIncome = () => {
+    const rows = data.income.map(i=>({ Month:i.month, Source:i.source||"", "Amount (INR)":i.amount }));
+    download(toCSV(rows,["Month","Source","Amount (INR)"]), "income.csv","text/csv");
+    setStatus("✓ Income exported");
+  };
+
+  const exportInvestments = () => {
+    const rows = data.investments.flatMap(inv=>
+      (inv.snapshots||[]).map(s=>({ Fund:inv.name, Type:inv.type, Date:s.date, "Value (INR)":s.value, "Invested (INR)":inv.invested||0 }))
+    );
+    download(toCSV(rows,["Fund","Type","Date","Value (INR)","Invested (INR)"]), "investments.csv","text/csv");
+    setStatus("✓ Investments exported");
+  };
+
+  const exportAll = () => {
+    // Excel-compatible: one CSV per sheet, but we bundle as a multi-section CSV
+    const sections = [
+      "=== EXPENSES ===",
+      toCSV(data.expenses.map(e=>({ Date:e.date||e.month+"-01",Month:e.month,Merchant:e.merchant||"",Item:e.item||e.note||"",Category:e.category,"Amount (INR)":e.amount })),["Date","Month","Merchant","Item","Category","Amount (INR)"]),
+      "\n=== INCOME ===",
+      toCSV(data.income.map(i=>({Month:i.month,Source:i.source||"","Amount (INR)":i.amount})),["Month","Source","Amount (INR)"]),
+      "\n=== INVESTMENTS ===",
+      toCSV(data.investments.flatMap(inv=>(inv.snapshots||[]).map(s=>({Fund:inv.name,Type:inv.type,Date:s.date,"Value (INR)":s.value,"Invested (INR)":inv.invested||0}))),["Fund","Type","Date","Value (INR)","Invested (INR)"]),
+      "\n=== SAVINGS GOALS ===",
+      toCSV(data.savingsGoals.map(g=>({Name:g.name,Target:g.target,Saved:g.saved,"%":Math.round((g.saved/g.target)*100),Deadline:g.deadline||""})),["Name","Target","Saved","%","Deadline"]),
+    ].join("\n");
+    download(sections,"finance-export.csv","text/csv");
+    setStatus("✓ Full export downloaded");
+    setTimeout(()=>setStatus(""),3000);
+  };
+
+  return (
+    <div style={B.card}>
+      <div style={B.cardTitle}>📥 Export Data</div>
+      <div style={{fontSize:12,color:"#6366f1",marginBottom:12}}>Download as CSV — opens in Excel, Google Sheets, or Numbers.</div>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {[
+          ["Export Expenses",    exportExpenses, "#f43f5e"],
+          ["Export Income",      exportIncome,   "#22c55e"],
+          ["Export Investments", exportInvestments,"#38bdf8"],
+        ].map(([label,fn,color])=>(
+          <button key={label} onClick={fn} style={{background:"#12122a",border:`1px solid ${color}44`,borderRadius:8,color,padding:"10px",fontSize:13,fontWeight:600,cursor:"pointer",textAlign:"left"}}>
+            ↓ {label}
+          </button>
+        ))}
+        <button onClick={exportAll} style={{...B.btn,marginTop:4}}>↓ Export Everything (all sheets)</button>
+      </div>
+      {status && <div style={{marginTop:8,fontSize:12,color:"#22c55e",textAlign:"center"}}>{status}</div>}
+    </div>
+  );
+}
+
+// ── RECEIPT SCAN MODAL ────────────────────────────────────────────────────────
+function ScanModal({ onClose, onConfirm }) {
+  const [stage,    setStage]    = useState("upload");
+  const [dragOver, setDragOver] = useState(false);
+  const [items,    setItems]    = useState([]);
+  const [selected, setSelected] = useState({});
+  const [error,    setError]    = useState("");
+  const [preview,  setPreview]  = useState(null);
+  const [scanDate, setScanDate] = useState(todayDate());
+  const fileRef = useRef();
+
+  const processFile = async file => {
+    setError(""); setStage("scanning");
+    const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(file); });
+    const isImage = file.type.startsWith("image/");
+    if(isImage) setPreview(URL.createObjectURL(file));
+    const prompt = `You are a financial receipt parser. Extract EACH individual line item as a SEPARATE entry.
+Categories: Housing, Food, Transport, Health, Leisure, Clothing, Education, Baby, Other
+Return ONLY JSON array, no markdown:
+[{"merchant":"store name","item":"product name","amount":number,"category":"...","type":"expense"}]
+Return [] if no prices found.`;
+    try {
+      const part = isImage?{type:"image",source:{type:"base64",media_type:file.type,data:base64}}:{type:"document",source:{type:"base64",media_type:"application/pdf",data:base64}};
+      const res  = await fetch("https://api.anthropic.com/v1/messages",{ method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,messages:[{role:"user",content:[part,{type:"text",text:prompt}]}]}) });
+      const d = await res.json();
+      const parsed = JSON.parse((d.content?.map(b=>b.text||"").join("")||"").replace(/```json|```/g,"").trim());
+      if(!Array.isArray(parsed)||parsed.length===0){ setError("No items detected."); setStage("upload"); return; }
+      setItems(parsed.map((x,i)=>({...x,id:i,amount:Math.round(x.amount)})));
+      setSelected(Object.fromEntries(parsed.map((_,i)=>[i,true])));
+      setStage("review");
+    } catch { setError("Could not parse the image."); setStage("upload"); }
+  };
+
+  const total = items.filter(x=>selected[x.id]).reduce((s,x)=>s+x.amount,0);
+  const merchants = [...new Set(items.map(x=>x.merchant))];
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{background:"#12122a",borderRadius:"16px 16px 0 0",width:"100%",maxWidth:480,maxHeight:"92vh",overflowY:"auto",padding:20}}>
+        <button style={{background:"transparent",border:"none",color:"#6366f1",fontSize:13,cursor:"pointer",padding:0,marginBottom:16}} onClick={onClose}>← Back</button>
+        <div style={{fontSize:15,fontWeight:700,color:"#a78bfa",marginBottom:4}}>📸 Scan Receipt</div>
+        <div style={{fontSize:12,color:"#6366f1",marginBottom:16}}>Each item gets its own category automatically</div>
+        {stage==="upload" && <>
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>Receipt date</div>
+            <input style={{...B.input,marginBottom:0}} type="date" value={scanDate} onChange={e=>setScanDate(e.target.value)}/>
+          </div>
+          <div style={{border:`2px dashed ${dragOver?"#a78bfa":"#312e81"}`,borderRadius:12,padding:32,textAlign:"center",cursor:"pointer"}}
+            onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)}
+            onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f)processFile(f);}} onClick={()=>fileRef.current.click()}>
+            <div style={{fontSize:36,marginBottom:8}}>🧾</div>
+            <div style={{color:"#c4b5fd",fontSize:14,marginBottom:4}}>Tap to upload receipt</div>
+            <div style={{color:"#6366f1",fontSize:11}}>Blinkit · Swiggy · Zomato · Amazon · Any receipt</div>
+          </div>
+          <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)processFile(f);}}/>
+          {error&&<div style={{color:"#f43f5e",fontSize:13,marginTop:8,textAlign:"center"}}>{error}</div>}
+        </>}
+        {stage==="scanning" && <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"40px 0"}}>
+          <div style={{width:40,height:40,border:"3px solid #312e81",borderTop:"3px solid #a78bfa",borderRadius:"50%",animation:"spin 0.8s linear infinite",marginBottom:16}}/>
+          <div style={{color:"#a78bfa",fontSize:14,fontWeight:600}}>Reading each item…</div>
+          {preview&&<img src={preview} style={{width:"100%",maxHeight:130,objectFit:"cover",borderRadius:8,marginTop:16,opacity:0.7}} alt="p"/>}
+        </div>}
+        {stage==="review" && <>
+          <div style={{fontSize:12,color:"#22c55e",marginBottom:12,fontWeight:600}}>✓ {items.length} items found — {shortDate(scanDate)}</div>
+          {merchants.map(merchant=>(
+            <div key={merchant} style={{marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#c4b5fd",marginBottom:6}}>🏪 {merchant}</div>
+              {items.filter(x=>x.merchant===merchant).map(item=>(
+                <div key={item.id} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid #1e1b4b"}}>
+                  <input type="checkbox" style={{width:16,height:16,accentColor:"#6366f1",cursor:"pointer"}} checked={!!selected[item.id]} onChange={()=>setSelected(s=>({...s,[item.id]:!s[item.id]}))}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,color:"#e2e8f0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{item.item}</div>
+                    <select value={item.category} onChange={e=>setItems(p=>p.map(x=>x.id===item.id?{...x,category:e.target.value}:x))}
+                      style={{background:"#1a1a2e",border:`1px solid ${catColor(item.category)}44`,borderRadius:4,color:catColor(item.category),fontSize:11,padding:"2px 6px",cursor:"pointer",outline:"none",marginTop:4}}>
+                      {CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div style={{fontWeight:700,fontSize:13,color:"#f43f5e",flexShrink:0}}>₹{item.amount.toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
+          ))}
+          <div style={{background:"#12122a",borderRadius:8,padding:"10px 12px",marginBottom:12,display:"flex",justifyContent:"space-between"}}>
+            <span style={{fontSize:13,color:"#818cf8"}}>Total</span>
+            <span style={{fontSize:15,fontWeight:700,color:"#f43f5e"}}>₹{total.toLocaleString()}</span>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button style={{flex:1,background:"#1e1b4b",border:"none",borderRadius:8,color:"#a78bfa",padding:"12px",fontSize:13,fontWeight:600,cursor:"pointer"}} onClick={()=>setStage("upload")}>Re-scan</button>
+            <button style={{flex:2,...B.btn,marginBottom:0}} onClick={()=>{onConfirm(items.filter(x=>selected[x.id]),scanDate);onClose();}}>
+              Import {Object.values(selected).filter(Boolean).length}
+            </button>
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ── PORTFOLIO SCAN MODAL ──────────────────────────────────────────────────────
+function PortfolioScanModal({ onClose, onConfirm, existingNames }) {
+  const [stage,setStage]=useState("upload"); const [dragOver,setDragOver]=useState(false);
+  const [scanned,setScanned]=useState([]); const [selected,setSelected]=useState({});
+  const [error,setError]=useState(""); const [preview,setPreview]=useState(null);
+  const [scanDate,setScanDate]=useState(todayDate()); const fileRef=useRef();
+
+  const processFile = async file => {
+    setError(""); setStage("scanning");
+    const base64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});
+    const isImage=file.type.startsWith("image/");
+    if(isImage)setPreview(URL.createObjectURL(file));
+    const hint=existingNames.length>0?`\nMatch existing: ${existingNames.join(", ")}`:"";
+    const prompt=`Extract each mutual fund/investment holding.${hint}\nReturn ONLY JSON array: [{"name","type","currentValue"(INR),"invested"(INR,0 if unknown),"currency"}]. Return [] if nothing.`;
+    try {
+      const part=isImage?{type:"image",source:{type:"base64",media_type:file.type,data:base64}}:{type:"document",source:{type:"base64",media_type:"application/pdf",data:base64}};
+      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:[part,{type:"text",text:prompt}]}]})});
+      const d=await res.json();
+      const parsed=JSON.parse((d.content?.map(b=>b.text||"").join("")||"").replace(/```json|```/g,"").trim());
+      if(!Array.isArray(parsed)||parsed.length===0){setError("No fund data.");setStage("upload");return;}
+      const rates={INR:1,GBP:104,USD:84,AED:23};
+      const norm=parsed.map((f,i)=>({...f,id:i,currentValue:Math.round(f.currentValue*(rates[f.currency]||1)),invested:Math.round((f.invested||0)*(rates[f.currency]||1)),isExisting:existingNames.includes(f.name)}));
+      setScanned(norm);setSelected(Object.fromEntries(norm.map(f=>[f.id,true])));setStage("review");
+    } catch{setError("Could not read.");setStage("upload");}
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:200,display:"flex",alignItems:"flex-end",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{background:"#12122a",borderRadius:"16px 16px 0 0",width:"100%",maxWidth:480,maxHeight:"92vh",overflowY:"auto",padding:20}}>
+        <button style={{background:"transparent",border:"none",color:"#6366f1",fontSize:13,cursor:"pointer",padding:0,marginBottom:16}} onClick={onClose}>← Back</button>
+        <div style={{fontSize:15,fontWeight:700,color:"#38bdf8",marginBottom:4}}>📊 Scan Portfolio</div>
+        <div style={{fontSize:12,color:"#6366f1",marginBottom:16}}>Groww · Zerodha · Kuvera · Any platform</div>
+        {stage==="upload"&&<>
+          <div style={{marginBottom:12}}><div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>Snapshot date</div><input style={{...B.input,marginBottom:0}} type="date" value={scanDate} onChange={e=>setScanDate(e.target.value)}/></div>
+          <div style={{border:`2px dashed ${dragOver?"#38bdf8":"#312e81"}`,borderRadius:12,padding:32,textAlign:"center",cursor:"pointer"}}
+            onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)}
+            onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f)processFile(f);}} onClick={()=>fileRef.current.click()}>
+            <div style={{fontSize:36,marginBottom:8}}>📊</div>
+            <div style={{color:"#c4b5fd",fontSize:14}}>Tap to upload portfolio screenshot</div>
+          </div>
+          <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{display:"none"}} onChange={e=>{const f=e.target.files[0];if(f)processFile(f);}}/>
+          {error&&<div style={{color:"#f43f5e",fontSize:13,marginTop:8,textAlign:"center"}}>{error}</div>}
+        </>}
+        {stage==="scanning"&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"40px 0"}}>
+          <div style={{width:40,height:40,border:"3px solid #312e81",borderTop:"3px solid #38bdf8",borderRadius:"50%",animation:"spin 0.8s linear infinite",marginBottom:16}}/>
+          <div style={{color:"#38bdf8",fontSize:14,fontWeight:600}}>Reading portfolio…</div>
+          {preview&&<img src={preview} style={{width:"100%",maxHeight:130,objectFit:"cover",borderRadius:8,marginTop:16,opacity:0.7}} alt="p"/>}
+        </div>}
+        {stage==="review"&&<>
+          <div style={{fontSize:12,color:"#22c55e",marginBottom:12,fontWeight:600}}>✓ {scanned.length} holdings — {shortDate(scanDate)}</div>
+          {scanned.map(f=>{const gain=f.currentValue-f.invested;const pct=f.invested>0?((gain/f.invested)*100).toFixed(1):null;return(
+            <div key={f.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #1e1b4b"}}>
+              <input type="checkbox" style={{width:18,height:18,accentColor:"#38bdf8",cursor:"pointer"}} checked={!!selected[f.id]} onChange={()=>setSelected(s=>({...s,[f.id]:!s[f.id]}))}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,color:"#e2e8f0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.name}</div>
+                <div style={{fontSize:11,color:"#6366f1",marginTop:2}}><span style={B.badge("#38bdf8")}>{f.type}</span>{f.isExisting&&<span style={{...B.badge("#22c55e"),marginLeft:4}}>↻ update</span>}</div>
+              </div>
+              <div style={{textAlign:"right",flexShrink:0}}>
+                <div style={{fontWeight:700,fontSize:13,color:"#38bdf8"}}>₹{f.currentValue.toLocaleString()}</div>
+                {pct&&<div style={{fontSize:11,color:gain>=0?"#22c55e":"#f43f5e"}}>{gain>=0?"+":""}{pct}%</div>}
+              </div>
+            </div>
+          );})}
+          <div style={{display:"flex",gap:8,marginTop:12}}>
+            <button style={{flex:1,background:"#1e1b4b",border:"none",borderRadius:8,color:"#a78bfa",padding:"12px",fontSize:13,fontWeight:600,cursor:"pointer"}} onClick={()=>setStage("upload")}>Re-scan</button>
+            <button style={{flex:2,...B.btn,marginBottom:0}} onClick={()=>{onConfirm(scanned.filter(f=>selected[f.id]),scanDate);onClose();}}>Import {Object.values(selected).filter(Boolean).length}</button>
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ── DATE RANGE BREAKDOWN ──────────────────────────────────────────────────────
+function BreakdownView({ expenses, currency }) {
+  const [from,setFrom]=useState(todayMonth()); const [to,setTo]=useState(todayMonth()); const [drill,setDrill]=useState(null);
+  const presets=[{label:"This month",from:todayMonth(),to:todayMonth()},{label:"Last 3M",from:(()=>{const d=new Date();d.setMonth(d.getMonth()-2);return d.toISOString().slice(0,7);})(),to:todayMonth()},{label:"Last 6M",from:(()=>{const d=new Date();d.setMonth(d.getMonth()-5);return d.toISOString().slice(0,7);})(),to:todayMonth()}];
+  const inRange=expenses.filter(e=>{const d=(e.date||e.month+"-01").slice(0,7);return d>=from&&d<=to;});
+  const totalSpend=inRange.reduce((s,e)=>s+e.amount,0);
+  const byMerchant={};inRange.forEach(e=>{const m=e.merchant||"Manual";byMerchant[m]=(byMerchant[m]||0)+e.amount;});
+  const byCat={};inRange.forEach(e=>{byCat[e.category]=(byCat[e.category]||0)+e.amount;});
+  const catList=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);
+  const merchantList=Object.entries(byMerchant).sort((a,b)=>b[1]-a[1]);
+  const drillItems=drill?inRange.filter(e=>drill.type==="merchant"?(e.merchant||"Manual")===drill.val:e.category===drill.val):[];
+  const drillByCat={};const drillByM={};drillItems.forEach(e=>{drillByCat[e.category]=(drillByCat[e.category]||0)+e.amount;drillByM[e.merchant||"Manual"]=(drillByM[e.merchant||"Manual"]||0)+e.amount;});
+  const drillTotal=drillItems.reduce((s,e)=>s+e.amount,0);
+
+  return(<>
+    <div style={B.card}>
+      <div style={B.cardTitle}>Date range</div>
+      <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+        {presets.map(p=><button key={p.label} onClick={()=>{setFrom(p.from);setTo(p.to);setDrill(null);}}
+          style={{background:from===p.from&&to===p.to?"#6366f1":"#12122a",border:"1px solid #312e81",borderRadius:6,color:from===p.from&&to===p.to?"#fff":"#818cf8",padding:"5px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>{p.label}</button>)}
+      </div>
+      <div style={B.row2}>
+        <div style={{flex:1}}><div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>From</div><input style={{...B.input,marginBottom:0}} type="month" value={from} onChange={e=>{setFrom(e.target.value);setDrill(null);}}/></div>
+        <div style={{flex:1}}><div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>To</div><input style={{...B.input,marginBottom:0}} type="month" value={to} onChange={e=>{setTo(e.target.value);setDrill(null);}}/></div>
+      </div>
+    </div>
+    {inRange.length===0&&<div style={{...B.card,color:"#4f46e5",fontSize:13,textAlign:"center",padding:24}}>No expenses in this period</div>}
+    {inRange.length>0&&!drill&&<>
+      <div style={{...B.card,background:"linear-gradient(135deg,#1a1a2e,#1e1b4b)"}}>
+        <div style={{display:"flex",justifyContent:"space-between"}}>
+          <div><div style={B.statLabel}>Total spent</div><div style={{fontSize:24,fontWeight:700,color:"#f43f5e"}}>{fmt(totalSpend,currency)}</div></div>
+          <div style={{textAlign:"right"}}><div style={B.statLabel}>Items</div><div style={{fontSize:24,fontWeight:700,color:"#a78bfa"}}>{inRange.length}</div></div>
+        </div>
+      </div>
+      <div style={B.card}>
+        <div style={B.cardTitle}>By category — tap to drill</div>
+        <ResponsiveContainer width="100%" height={160}>
+          <PieChart><Pie data={catList.map(([n,v])=>({name:n,value:v}))} cx="50%" cy="50%" innerRadius={45} outerRadius={70} dataKey="value" paddingAngle={3} onClick={d=>setDrill({type:"category",val:d.name})}>
+            {catList.map(([n],i)=><Cell key={i} fill={catColor(n)} cursor="pointer"/>)}
+          </Pie><Tooltip contentStyle={{background:"#1a1a2e",border:"1px solid #312e81",borderRadius:8,color:"#e2e8f0",fontSize:12}} formatter={v=>fmt(v,currency)}/></PieChart>
+        </ResponsiveContainer>
+        {catList.map(([cat,amt])=><div key={cat} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid #1e1b4b",cursor:"pointer"}} onClick={()=>setDrill({type:"category",val:cat})}>
+          <div style={{width:8,height:8,borderRadius:2,background:catColor(cat),flexShrink:0}}/><span style={{fontSize:12,color:"#c4b5fd",flex:1}}>{cat}</span>
+          <span style={{fontSize:11,color:"#6366f1"}}>{((amt/totalSpend)*100).toFixed(0)}%</span><span style={{fontSize:13,color:"#e2e8f0",fontWeight:600}}>{fmt(amt,currency)}</span><span style={{color:"#4f46e5"}}>›</span>
+        </div>)}
+      </div>
+      <div style={B.card}>
+        <div style={B.cardTitle}>By merchant — tap to drill</div>
+        {merchantList.map(([merchant,amt])=><div key={merchant} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid #1e1b4b",cursor:"pointer"}} onClick={()=>setDrill({type:"merchant",val:merchant})}>
+          <div style={{flex:1}}><div style={{fontSize:13,color:"#e2e8f0"}}>{merchant}</div><div style={{fontSize:11,color:"#6366f1"}}>{inRange.filter(e=>(e.merchant||"Manual")===merchant).length} items · {((amt/totalSpend)*100).toFixed(0)}%</div></div>
+          <div style={{fontWeight:700,fontSize:14,color:"#f43f5e"}}>{fmt(amt,currency)}</div><span style={{color:"#4f46e5"}}>›</span>
+        </div>)}
+      </div>
+    </>}
+    {drill&&<div style={B.card}>
+      <button style={{background:"transparent",border:"none",color:"#6366f1",fontSize:13,cursor:"pointer",padding:0,marginBottom:12}} onClick={()=>setDrill(null)}>← Back</button>
+      <div style={{fontSize:15,fontWeight:700,color:"#c4b5fd",marginBottom:4}}>{drill.type==="merchant"?`🏪 ${drill.val}`:`🏷 ${drill.val}`}</div>
+      <div style={{fontSize:13,color:"#f43f5e",fontWeight:700,marginBottom:12}}>{fmt(drillTotal,currency)}</div>
+      <div style={{...B.cardTitle,marginBottom:8}}>{drill.type==="merchant"?"By category":"By merchant"}</div>
+      {(drill.type==="merchant"?Object.entries(drillByCat):Object.entries(drillByM)).sort((a,b)=>b[1]-a[1]).map(([label,amt])=>(
+        <div key={label} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid #1e1b4b"}}>
+          {drill.type==="merchant"&&<div style={{width:8,height:8,borderRadius:2,background:catColor(label),flexShrink:0}}/>}
+          <span style={{fontSize:12,color:"#c4b5fd",flex:1}}>{label}</span>
+          <span style={{fontSize:11,color:"#6366f1"}}>{((amt/drillTotal)*100).toFixed(0)}%</span>
+          <span style={{fontSize:13,color:"#e2e8f0",fontWeight:600}}>{fmt(amt,currency)}</span>
+        </div>
+      ))}
+      <div style={{...B.cardTitle,marginBottom:8,marginTop:16}}>All items</div>
+      {drillItems.sort((a,b)=>b.amount-a.amount).map(e=>(
+        <div key={e.id} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 0",borderBottom:"1px solid #1e1b4b"}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,color:"#e2e8f0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{e.item||e.note||e.category}</div>
+            <div style={{fontSize:11,color:"#6366f1",marginTop:1}}>{shortDate(e.date||e.month+"-01")}{e.merchant&&drill.type==="category"&&<span style={{marginLeft:6,color:"#818cf8"}}>· {e.merchant}</span>}<span style={{marginLeft:6}}><span style={B.badge(catColor(e.category))}>{e.category}</span></span></div>
+          </div>
+          <div style={{fontWeight:700,fontSize:13,color:"#f43f5e",flexShrink:0}}>{fmt(e.amount,currency)}</div>
+        </div>
+      ))}
+    </div>}
+  </>);
+}
+
+// ── PERFORMANCE CHART ─────────────────────────────────────────────────────────
+function PerformanceChart({ investments, currency, investmentNotes, onSaveNote }) {
+  const [view,setView]=useState("portfolio"); const [fund,setFund]=useState(null); const [editNote,setEditNote]=useState(null); const [noteText,setNoteText]=useState("");
+  const sym=CURRENCY[currency]?.symbol||"₹"; const rate=CURRENCY[currency]?.rate||1;
+  const allDates=[...new Set(investments.flatMap(inv=>(inv.snapshots||[]).map(s=>s.date)))].sort();
+  const portfolioLine=allDates.map(date=>{const total=investments.reduce((sum,inv)=>{const snaps=(inv.snapshots||[]).filter(s=>s.date<=date).sort((a,b)=>a.date.localeCompare(b.date));return sum+(snaps[snaps.length-1]?.value||0);},0);return{date:shortDate(date),value:Math.round(total*rate)};});
+  const fundLine=fund?(fund.snapshots||[]).sort((a,b)=>a.date.localeCompare(b.date)).map(s=>({date:shortDate(s.date),value:Math.round(s.value*rate)})):[];
+  const fundsWithHistory=investments.filter(inv=>(inv.snapshots||[]).length>=2);
+
+  if(investments.length===0) return <div style={{...B.card,textAlign:"center",padding:"32px 16px"}}><div style={{fontSize:32,marginBottom:8}}>📈</div><div style={{color:"#c4b5fd",fontSize:14}}>No performance data yet</div><div style={{color:"#6366f1",fontSize:12,marginTop:4}}>Scan your portfolio today, then again next month</div></div>;
+
+  return(<>
+    <div style={{display:"flex",background:"#12122a",borderRadius:8,overflow:"hidden",border:"1px solid #312e81",marginBottom:12}}>
+      {[["portfolio","Portfolio"],["fund","Per Fund"]].map(([k,v])=><button key={k} onClick={()=>{setView(k);if(k==="fund"&&!fund&&investments[0])setFund(investments[0]);}}
+        style={{flex:1,padding:"8px",border:"none",background:view===k?"#6366f1":"transparent",color:view===k?"#fff":"#818cf8",fontSize:12,fontWeight:600,cursor:"pointer"}}>{v}</button>)}
+    </div>
+    {view==="portfolio"&&<div style={B.card}>
+      <div style={B.cardTitle}>Total portfolio over time</div>
+      {portfolioLine.length>=2?<ResponsiveContainer width="100%" height={180}><LineChart data={portfolioLine}><XAxis dataKey="date" tick={{fill:"#6366f1",fontSize:10}} axisLine={false} tickLine={false}/><YAxis hide/><Tooltip contentStyle={{background:"#1a1a2e",border:"1px solid #312e81",borderRadius:8,color:"#e2e8f0",fontSize:12}} formatter={v=>[`${sym}${v.toLocaleString()}`,"Value"]}/><Line type="monotone" dataKey="value" stroke="#38bdf8" strokeWidth={2.5} dot={{fill:"#38bdf8",r:4}}/></LineChart></ResponsiveContainer>
+      :<div style={{color:"#6366f1",fontSize:13,textAlign:"center",padding:"20px 0"}}>Add a second snapshot next month to see the trend</div>}
+    </div>}
+    {view==="fund"&&<>
+      <div style={B.card}>
+        <div style={B.cardTitle}>Select fund</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          {investments.map((inv,i)=><button key={inv.id} onClick={()=>setFund(inv)}
+            style={{background:fund?.id===inv.id?INV_COLORS[i%INV_COLORS.length]:"#12122a",border:`1px solid ${INV_COLORS[i%INV_COLORS.length]}44`,borderRadius:6,color:fund?.id===inv.id?"#fff":INV_COLORS[i%INV_COLORS.length],padding:"5px 10px",fontSize:11,fontWeight:600,cursor:"pointer"}}>
+            {inv.name.length>22?inv.name.slice(0,22)+"…":inv.name}
+          </button>)}
+        </div>
+      </div>
+      {fund&&<div style={B.card}>
+        <div style={B.cardTitle}>{fund.name}</div>
+        {fundLine.length>=2?<ResponsiveContainer width="100%" height={160}><LineChart data={fundLine}><XAxis dataKey="date" tick={{fill:"#6366f1",fontSize:10}} axisLine={false} tickLine={false}/><YAxis hide/><Tooltip contentStyle={{background:"#1a1a2e",border:"1px solid #312e81",borderRadius:8,color:"#e2e8f0",fontSize:12}} formatter={v=>[`${sym}${v.toLocaleString()}`,"Value"]}/><Line type="monotone" dataKey="value" stroke="#a78bfa" strokeWidth={2.5} dot={{fill:"#a78bfa",r:4}}/></LineChart></ResponsiveContainer>
+        :<div style={{color:"#6366f1",fontSize:13,textAlign:"center",padding:"20px 0"}}>Only 1 snapshot — scan again next month</div>}
+        {/* Snapshot history */}
+        {[...(fund.snapshots||[])].sort((a,b)=>b.date.localeCompare(a.date)).map((snap,i,arr)=>{const prev=arr[i+1];const chg=prev?snap.value-prev.value:null;const pct=prev?((chg/prev.value)*100).toFixed(1):null;return(
+          <div key={snap.date} style={B.row}>
+            <div><div style={{fontSize:13,color:"#e2e8f0"}}>{shortDate(snap.date)}</div>{pct&&<div style={{fontSize:11,color:chg>=0?"#22c55e":"#f43f5e",marginTop:2}}>{chg>=0?"▲":"▼"} {fmt(Math.abs(chg),"INR")} ({chg>=0?"+":""}{pct}%)</div>}</div>
+            <div style={{fontWeight:700,color:"#38bdf8",fontSize:14}}>{fmt(snap.value,currency)}</div>
+          </div>
+        );})}
+        {/* Notes */}
+        <div style={{marginTop:12,borderTop:"1px solid #1e1b4b",paddingTop:12}}>
+          <div style={{fontSize:11,color:"#6366f1",marginBottom:6,fontWeight:600}}>📝 Notes</div>
+          {editNote===fund.id?(
+            <>
+              <textarea style={{...B.textarea,marginBottom:8}} value={noteText} onChange={e=>setNoteText(e.target.value)} placeholder="e.g. Added ₹10k SIP, market dip — holding, switched to growth plan…"/>
+              <div style={B.row2}>
+                <button style={{flex:1,background:"#1e1b4b",border:"none",borderRadius:7,color:"#818cf8",padding:"7px",fontSize:12,cursor:"pointer"}} onClick={()=>setEditNote(null)}>Cancel</button>
+                <button style={{flex:2,background:"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",borderRadius:7,color:"#fff",padding:"7px",fontSize:12,fontWeight:600,cursor:"pointer"}} onClick={()=>{onSaveNote(fund.id,noteText);setEditNote(null);}}>Save note</button>
+              </div>
+            </>
+          ):(
+            <>
+              {investmentNotes[fund.id]?<div style={{fontSize:13,color:"#c4b5fd",lineHeight:1.5,marginBottom:8}}>{investmentNotes[fund.id]}</div>:<div style={{fontSize:12,color:"#4f46e5",marginBottom:8}}>No notes yet</div>}
+              <button onClick={()=>{setEditNote(fund.id);setNoteText(investmentNotes[fund.id]||"");}} style={{background:"transparent",border:"1px solid #312e81",borderRadius:6,color:"#6366f1",fontSize:11,padding:"5px 10px",cursor:"pointer"}}>
+                {investmentNotes[fund.id]?"✎ Edit note":"+ Add note"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>}
+    </>}
+    {fundsWithHistory.length>0&&<div style={B.card}>
+      <div style={B.cardTitle}>Since first snapshot</div>
+      {fundsWithHistory.map((inv,i)=>{const snaps=[...(inv.snapshots||[])].sort((a,b)=>a.date.localeCompare(b.date));const first=snaps[0],last=snaps[snaps.length-1];const chg=last.value-first.value;const pct=((chg/first.value)*100).toFixed(1);return(
+        <div key={inv.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #1e1b4b"}}>
+          <div style={{width:8,height:8,borderRadius:2,background:INV_COLORS[i%INV_COLORS.length],flexShrink:0}}/>
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,color:"#c4b5fd",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{inv.name}</div><div style={{fontSize:11,color:"#6366f1"}}>{shortDate(first.date)} → {shortDate(last.date)}</div></div>
+          <div style={{textAlign:"right",flexShrink:0}}><div style={{fontSize:13,fontWeight:700,color:chg>=0?"#22c55e":"#f43f5e"}}>{chg>=0?"+":""}{pct}%</div><div style={{fontSize:11,color:"#818cf8"}}>{fmt(Math.abs(chg),currency)}</div></div>
+        </div>
+      );})}
+    </div>}
+  </>);
+}
+
+// ── AI FINANCIAL ANALYSIS ─────────────────────────────────────────────────────
+function FinancialAnalysis({ data, currency }) {
+  const [analysis,setAnalysis]=useState(null); const [loading,setLoading]=useState(false); const [open,setOpen]=useState(false);
+  const thisMonth=todayMonth();
+  const months=[]; for(let i=2;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);months.push(d.toISOString().slice(0,7));}
+  const run=async()=>{
+    setLoading(true);setOpen(true);
+    const monthStats=months.map(m=>{const inc=data.income.filter(x=>x.month===m).reduce((a,b)=>a+b.amount,0);const exp=data.expenses.filter(x=>x.month===m).reduce((a,b)=>a+b.amount,0);const byCat={};CATEGORIES.forEach(cat=>{const v=data.expenses.filter(e=>e.category===cat&&e.month===m).reduce((a,b)=>a+b.amount,0);if(v>0)byCat[cat]=v;});return{month:m,income:inc,expenses:exp,net:inc-exp,byCategory:byCat};});
+    const byMerchant={};data.expenses.filter(e=>e.month===thisMonth).forEach(e=>{const m=e.merchant||"Manual";byMerchant[m]=(byMerchant[m]||0)+e.amount;});
+    const totalPortfolio=data.investments.reduce((sum,inv)=>{const s=[...(inv.snapshots||[])].sort((a,b)=>b.date.localeCompare(a.date));return sum+(s[0]?.value||0);},0);
+    const budgetStatus=Object.entries(data.budgetLimits||{}).map(([cat,limit])=>{const spent=data.expenses.filter(e=>e.category===cat&&e.month===thisMonth).reduce((a,b)=>a+b.amount,0);return{category:cat,limit,spent,pct:Math.round((spent/limit)*100)};});
+    const snapshot={currency,monthlyStats:monthStats,topMerchants:Object.entries(byMerchant).sort((a,b)=>b[1]-a[1]).slice(0,5),investments:{totalPortfolio,totalInvested:data.investments.reduce((a,b)=>a+(b.invested||0),0),count:data.investments.length},savingsGoals:data.savingsGoals.map(g=>({name:g.name,target:g.target,saved:g.saved,pct:Math.round((g.saved/g.target)*100),deadline:g.deadline})),budgetStatus,recurring:{count:data.recurring?.length||0,monthlyTotal:(data.recurring||[]).filter(r=>r.frequency==="monthly").reduce((a,r)=>a+r.amount,0)}};
+    const prompt=`You are a sharp personal finance advisor. Analyse this snapshot and give honest, specific, actionable advice.\n\nData: ${JSON.stringify(snapshot)}\n\nReturn ONLY JSON (no markdown):\n{"score":<1-10>,"scoreLabel":"Strong|Good|Fair|Needs work","headline":"one punchy sentence","positives":["2-3 specific things going well with numbers"],"warnings":["2-3 specific concerns with numbers"],"actions":["3-4 concrete prioritised actions with targets"],"savingsNote":"one sentence or null","investmentNote":"one sentence or null"}\n\nBe direct and reference actual figures. If data is sparse, acknowledge it.`;
+    try{const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:prompt}]})});const d=await res.json();const text=d.content?.map(b=>b.text||"").join("")||"";setAnalysis(JSON.parse(text.replace(/```json|```/g,"").trim()));}catch{setAnalysis({error:true});}
+    setLoading(false);
+  };
+  const sc=analysis?.score; const scoreColor=s=>s>=8?"#22c55e":s>=6?"#a78bfa":s>=4?"#fb923c":"#f43f5e";
+  return(
+    <div style={{...B.card,background:"linear-gradient(135deg,#1a1a2e,#1e1032)",border:"1px solid #4c1d95"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:open&&analysis?12:0}}>
+        <div><div style={{fontSize:12,fontWeight:700,color:"#a78bfa",textTransform:"uppercase",letterSpacing:"0.08em"}}>✦ AI Analysis</div>{analysis&&!loading&&<div style={{fontSize:11,color:"#6366f1",marginTop:2}}>{analysis.scoreLabel} · {sc}/10</div>}</div>
+        <button onClick={()=>{if(!analysis)run();else setOpen(o=>!o);}} style={{background:loading?"#1e1b4b":"linear-gradient(135deg,#7c3aed,#6366f1)",border:"none",borderRadius:8,color:"#fff",padding:"8px 14px",fontSize:12,fontWeight:600,cursor:loading?"not-allowed":"pointer",opacity:loading?0.7:1}}>
+          {loading?"Analysing…":analysis?(open?"Hide":"Refresh ↺"):"Analyse →"}
+        </button>
+      </div>
+      {loading&&<div style={{display:"flex",alignItems:"center",gap:10,paddingTop:12}}><div style={{width:20,height:20,border:"2px solid #312e81",borderTop:"2px solid #a78bfa",borderRadius:"50%",animation:"spin 0.8s linear infinite",flexShrink:0}}/><div style={{fontSize:13,color:"#6366f1"}}>Reading your finances…</div></div>}
+      {analysis&&!loading&&open&&!analysis.error&&(()=>{return(<>
+        <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 0",borderBottom:"1px solid #2d2b55",marginBottom:12}}>
+          <div style={{position:"relative",width:52,height:52,flexShrink:0}}>
+            <svg viewBox="0 0 36 36" style={{width:52,height:52,transform:"rotate(-90deg)"}}>
+              <circle cx="18" cy="18" r="15.9" fill="none" stroke="#1e1b4b" strokeWidth="3"/>
+              <circle cx="18" cy="18" r="15.9" fill="none" stroke={scoreColor(sc)} strokeWidth="3" strokeDasharray={`${sc*10} 100`} strokeLinecap="round"/>
+            </svg>
+            <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,color:scoreColor(sc)}}>{sc}</div>
+          </div>
+          <div><div style={{fontSize:13,fontWeight:600,color:"#e2e8f0",marginBottom:2}}>{analysis.scoreLabel}</div><div style={{fontSize:12,color:"#a78bfa",lineHeight:1.4}}>{analysis.headline}</div></div>
+        </div>
+        <div style={{marginBottom:12}}><div style={{fontSize:11,fontWeight:700,color:"#22c55e",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>✓ What's working</div>{analysis.positives.map((p,i)=><div key={i} style={{display:"flex",gap:8,marginBottom:6}}><div style={{width:4,borderRadius:2,background:"#22c55e",flexShrink:0,marginTop:2}}/><div style={{fontSize:13,color:"#d1fae5",lineHeight:1.5}}>{p}</div></div>)}</div>
+        <div style={{marginBottom:12}}><div style={{fontSize:11,fontWeight:700,color:"#fb923c",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚠ Watch these</div>{analysis.warnings.map((w,i)=><div key={i} style={{display:"flex",gap:8,marginBottom:6}}><div style={{width:4,borderRadius:2,background:"#fb923c",flexShrink:0,marginTop:2}}/><div style={{fontSize:13,color:"#fed7aa",lineHeight:1.5}}>{w}</div></div>)}</div>
+        <div style={{marginBottom:analysis.savingsNote||analysis.investmentNote?12:0}}><div style={{fontSize:11,fontWeight:700,color:"#38bdf8",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>→ Actions</div>{analysis.actions.map((a,i)=><div key={i} style={{display:"flex",gap:10,marginBottom:8,background:"#12122a",borderRadius:8,padding:"8px 10px"}}><div style={{fontSize:12,fontWeight:700,color:"#38bdf8",flexShrink:0,marginTop:1}}>{i+1}</div><div style={{fontSize:13,color:"#e2e8f0",lineHeight:1.5}}>{a}</div></div>)}</div>
+        {(analysis.savingsNote||analysis.investmentNote)&&<div style={{borderTop:"1px solid #2d2b55",paddingTop:12,display:"flex",flexDirection:"column",gap:6}}>{analysis.savingsNote&&<div style={{fontSize:12,color:"#c4b5fd",lineHeight:1.5}}>🎯 {analysis.savingsNote}</div>}{analysis.investmentNote&&<div style={{fontSize:12,color:"#c4b5fd",lineHeight:1.5}}>📈 {analysis.investmentNote}</div>}</div>}
+        <button onClick={run} style={{marginTop:12,background:"transparent",border:"1px solid #312e81",borderRadius:6,color:"#6366f1",fontSize:11,padding:"6px 12px",cursor:"pointer",width:"100%"}}>↺ Re-analyse</button>
+      </>);})()} 
+      {analysis?.error&&!loading&&open&&<div style={{fontSize:13,color:"#f43f5e",paddingTop:12}}>Could not generate analysis. Try again.</div>}
+    </div>
+  );
+}
+
+// ── MAIN APP ──────────────────────────────────────────────────────────────────
+function FinanceTracker() {
+  const [data,setData]         = useState(defaultData);
+  const [tab,setTab]           = useState("overview");
+  const [currency,setCurrency] = useState("INR");
+  const [loaded,setLoaded]     = useState(false);
+  const [showScan,setShowScan] = useState(false);
+  const [showPort,setShowPort] = useState(false);
+  const [toast,setToast]       = useState("");
+  const [invSubTab,setInvSubTab]  = useState("holdings");
+  const [spendSub,setSpendSub]   = useState("add");
+  const [incSubTab,setIncSubTab] = useState("manual");
+  const [toolsTab,setToolsTab]   = useState("converter");
+
+  const [expForm, setExpForm]  = useState({amount:"",category:"Food",note:"",month:todayMonth()});
+  const [incForm, setIncForm]  = useState({amount:"",source:"",month:todayMonth()});
+  const [goalForm,setGoalForm] = useState({name:"",target:"",saved:"",deadline:""});
+  const [invForm, setInvForm]  = useState({name:"",type:"Mutual Fund",value:"",invested:""});
+
+  useEffect(()=>{
+    try{
+      const raw=localStorage.getItem(STORAGE_KEY);
+      if(raw){
+        const p=JSON.parse(raw);
+        if(p.investments)p.investments=p.investments.map(inv=>!inv.snapshots?{...inv,snapshots:inv.value?[{date:todayDate(),value:inv.value}]:[]}:inv);
+        if(!p.budgetLimits)p.budgetLimits={};
+        if(!p.recurring)p.recurring=[];
+        if(!p.recurringIncome)p.recurringIncome=[];
+        if(!p.investmentNotes)p.investmentNotes={};
+        setData(p);setCurrency(p.currency||"INR");
+      }
+    }catch{}
+    setLoaded(true);
+  },[]);
+
+  const save=useCallback(next=>{setData(next);try{localStorage.setItem(STORAGE_KEY,JSON.stringify(next));}catch{};},[]);
+  const updateCurrency=c=>{setCurrency(c);save({...data,currency:c});};
+  const showToast=(msg,dur=3000)=>{setToast(msg);setTimeout(()=>setToast(""),dur);};
+
+  const addExpense=()=>{if(!expForm.amount)return;save({...data,expenses:[...data.expenses,{...expForm,id:Date.now(),amount:parseFloat(expForm.amount),date:expForm.month+"-01",merchant:"Manual",item:expForm.note||expForm.category}]});setExpForm({amount:"",category:"Food",note:"",month:todayMonth()});};
+  const addIncome=()=>{if(!incForm.amount)return;save({...data,income:[...data.income,{...incForm,id:Date.now(),amount:parseFloat(incForm.amount)}]});setIncForm({amount:"",source:"",month:todayMonth()});};
+  const addGoal=()=>{if(!goalForm.name||!goalForm.target)return;save({...data,savingsGoals:[...data.savingsGoals,{...goalForm,id:Date.now(),target:parseFloat(goalForm.target),saved:parseFloat(goalForm.saved||0)}]});setGoalForm({name:"",target:"",saved:"",deadline:""});};
+  const addInvestmentManual=()=>{if(!invForm.name||!invForm.value)return;const val=parseFloat(invForm.value);save({...data,investments:[...data.investments,{id:Date.now(),name:invForm.name,type:invForm.type,invested:parseFloat(invForm.invested||0),snapshots:[{date:todayDate(),value:val}]}]});setInvForm({name:"",type:"Mutual Fund",value:"",invested:""});};
+  const deleteItem=(list,id)=>save({...data,[list]:data[list].filter(x=>x.id!==id)});
+  const updateGoalSaved=(id,val)=>save({...data,savingsGoals:data.savingsGoals.map(g=>g.id===id?{...g,saved:parseFloat(val)||0}:g)});
+  const saveBudgetLimits=limits=>save({...data,budgetLimits:limits});
+  const addRecurring=r=>save({...data,recurring:[...(data.recurring||[]),r]});
+  const deleteRecurring=id=>save({...data,recurring:(data.recurring||[]).filter(r=>r.id!==id)});
+  const logRecurringNow=r=>{save({...data,expenses:[...data.expenses,{id:Date.now(),amount:r.amount,category:r.category,note:r.name,item:r.name,merchant:"Recurring",month:todayMonth(),date:todayDate()}]});showToast(`✓ Logged: ${r.name}`);};
+  const addRecurringIncome=r=>save({...data,recurringIncome:[...(data.recurringIncome||[]),r]});
+  const deleteRecurringIncome=id=>save({...data,recurringIncome:(data.recurringIncome||[]).filter(r=>r.id!==id)});
+  const logRecurringIncomeNow=r=>{save({...data,income:[...data.income,{id:Date.now(),amount:r.amount,source:r.source,month:todayMonth(),recurring:true}]});showToast(`✓ Logged: ${r.source}`);};
+  const saveInvestmentNote=(invId,note)=>save({...data,investmentNotes:{...(data.investmentNotes||{}), [invId]:note}});
+
+  const handleScanImport=(items,date)=>{
+    let nd={...data};
+    items.forEach(t=>{
+      if(t.type==="income"){nd.income=[...nd.income,{id:Date.now()+Math.random(),amount:t.amount,source:t.merchant||t.item,month:date.slice(0,7)}];}
+      else{nd.expenses=[...nd.expenses,{id:Date.now()+Math.random(),amount:t.amount,category:t.category,note:t.item,item:t.item,merchant:t.merchant||"Unknown",month:date.slice(0,7),date}];}
+    });
+    save(nd); showToast(`✓ Imported ${items.length} items`); setTab("spending"); setSpendSub("breakdown");
+  };
+
+  const handlePortfolioImport=(funds,scanDate)=>{
+    let newInv=[...data.investments]; let added=0,updated=0;
+    funds.forEach(f=>{
+      const idx=newInv.findIndex(inv=>inv.name.toLowerCase().trim()===f.name.toLowerCase().trim());
+      if(idx>=0){const ex=newInv[idx];const snaps=(ex.snapshots||[]).filter(s=>s.date!==scanDate);snaps.push({date:scanDate,value:f.currentValue});newInv[idx]={...ex,snapshots:snaps.sort((a,b)=>a.date.localeCompare(b.date)),invested:f.invested>0?f.invested:ex.invested};updated++;}
+      else{newInv.push({id:Date.now()+Math.random(),name:f.name,type:f.type,invested:f.invested||0,snapshots:[{date:scanDate,value:f.currentValue}]});added++;}
+    });
+    save({...data,investments:newInv});
+    const parts=[]; if(added)parts.push(`${added} new`); if(updated)parts.push(`${updated} updated`);
+    showToast(`✓ Portfolio: ${parts.join(", ")}`,3500); setTab("investments"); setInvSubTab("performance");
+  };
+
+  if(!loaded) return <div style={{background:"#0f0f1a",color:"#e2e8f0",minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"system-ui"}}>Loading…</div>;
+
+  const thisMonth=todayMonth();
+  const totalIncome  =data.income.filter(x=>x.month===thisMonth).reduce((a,b)=>a+b.amount,0);
+  const totalExpenses=data.expenses.filter(x=>x.month===thisMonth).reduce((a,b)=>a+b.amount,0);
+  const net=totalIncome-totalExpenses;
+  const totalPortfolio=data.investments.reduce((sum,inv)=>{const s=[...(inv.snapshots||[])].sort((a,b)=>b.date.localeCompare(a.date));return sum+(s[0]?.value||0);},0);
+  const totalInvested=data.investments.reduce((a,b)=>a+(b.invested||0),0);
+  const portfolioGain=totalPortfolio-totalInvested;
+  const expByCategory=CATEGORIES.map((cat,i)=>({name:cat,color:CAT_COLORS[i],value:data.expenses.filter(e=>e.category===cat&&e.month===thisMonth).reduce((a,b)=>a+b.amount,0)})).filter(x=>x.value>0);
+  const months6=[]; for(let i=5;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);months6.push(d.toISOString().slice(0,7));}
+  const trendData=months6.map(m=>({month:m.slice(5),income:data.income.filter(x=>x.month===m).reduce((a,b)=>a+b.amount,0)*(CURRENCY[currency]?.rate||1),expenses:data.expenses.filter(x=>x.month===m).reduce((a,b)=>a+b.amount,0)*(CURRENCY[currency]?.rate||1)}));
+
+  const budgetAlerts=Object.entries(data.budgetLimits||{}).filter(([cat,limit])=>{const spent=data.expenses.filter(e=>e.category===cat&&e.month===thisMonth).reduce((a,b)=>a+b.amount,0);return spent/limit>=0.8;});
+
+  const S={
+    app:   {background:"#0f0f1a",minHeight:"100vh",color:"#e2e8f0",fontFamily:"'Inter',system-ui,sans-serif",paddingBottom:80},
+    header:{background:"linear-gradient(135deg,#1e1b4b 0%,#312e81 100%)",padding:"20px 20px 0",borderBottom:"1px solid #312e81"},
+    tabs:  {display:"flex",gap:0,overflowX:"auto"},
+    tab:   a=>({padding:"10px 14px",border:"none",background:"transparent",color:a?"#a78bfa":"#6366f1",fontSize:13,fontWeight:a?600:400,cursor:"pointer",borderBottom:a?"2px solid #a78bfa":"2px solid transparent",whiteSpace:"nowrap"}),
+    subTab:a=>({flex:1,padding:"8px",border:"none",background:a?"#1e1b4b":"transparent",color:a?"#38bdf8":"#6366f1",fontSize:12,fontWeight:a?600:400,cursor:"pointer",borderBottom:a?"2px solid #38bdf8":"2px solid transparent"}),
+    statGrid:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12},
+    progressBar:{height:6,background:"#1e1b4b",borderRadius:3,overflow:"hidden",marginTop:6},
+    progressFill:pct=>({width:`${Math.min(pct,100)}%`,height:"100%",background:pct>=100?"#22c55e":"linear-gradient(90deg,#6366f1,#a78bfa)",borderRadius:3}),
+    toast:{position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:"#22c55e",color:"#fff",borderRadius:20,padding:"10px 20px",fontSize:13,fontWeight:600,zIndex:300,whiteSpace:"nowrap",boxShadow:"0 4px 20px rgba(0,0,0,0.4)"},
+  };
+
+  const TOOLS_TABS=[["converter","💱 Convert"],["budget","🎯 Budget"],["recurring","🔁 Recurring"],["networth","💎 Net Worth"],["export","📥 Export"]];
+
+  return(
+    <div style={S.app}>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      {toast&&<div style={S.toast}>{toast}</div>}
+      {showScan&&<ScanModal onClose={()=>setShowScan(false)} onConfirm={handleScanImport}/>}
+      {showPort&&<PortfolioScanModal onClose={()=>setShowPort(false)} onConfirm={handlePortfolioImport} existingNames={data.investments.map(i=>i.name)}/>}
+
+      <div style={S.header}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+          <div>
+            <p style={{fontSize:20,fontWeight:700,color:"#a78bfa",letterSpacing:"-0.5px",margin:0}}>Finance Tracker</p>
+            <p style={{fontSize:12,color:"#6366f1",marginTop:2,margin:0}}>Track · Analyse · Grow</p>
+          </div>
+          <div style={{display:"flex",background:"#1e1b4b",borderRadius:8,overflow:"hidden",border:"1px solid #312e81"}}>
+            {Object.keys(CURRENCY).map(c=><button key={c} onClick={()=>updateCurrency(c)} style={{padding:"6px 10px",border:"none",cursor:"pointer",fontSize:11,fontWeight:600,background:currency===c?"#6366f1":"transparent",color:currency===c?"#fff":"#818cf8"}}>{c}</button>)}
+          </div>
+        </div>
+        {budgetAlerts.length>0&&<div style={{background:"#fb923c22",border:"1px solid #fb923c44",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:12,color:"#fb923c"}}>
+          ⚠ Budget alert: {budgetAlerts.map(([cat])=>cat).join(", ")} near limit this month
+        </div>}
+        <div style={{display:"flex",gap:8,paddingBottom:12,flexWrap:"wrap"}}>
+          <button onClick={()=>setShowScan(true)} style={{display:"flex",alignItems:"center",gap:6,background:"linear-gradient(135deg,#7c3aed,#6366f1)",border:"none",borderRadius:8,color:"#fff",padding:"8px 12px",fontSize:12,fontWeight:600,cursor:"pointer"}}>📸 Scan Receipt</button>
+          <button onClick={()=>setShowPort(true)} style={{display:"flex",alignItems:"center",gap:6,background:"linear-gradient(135deg,#0369a1,#0ea5e9)",border:"none",borderRadius:8,color:"#fff",padding:"8px 12px",fontSize:12,fontWeight:600,cursor:"pointer"}}>📊 Scan Portfolio</button>
+        </div>
+        <div style={S.tabs}>
+          {[["overview","Overview"],["spending","Spending"],["income","Income"],["savings","Savings"],["investments","Investments"],["tools","Tools"]].map(([k,v])=>(
+            <button key={k} style={S.tab(tab===k)} onClick={()=>setTab(k)}>{v}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{padding:16}}>
+        {tab==="overview"&&<>
+          <FinancialAnalysis data={data} currency={currency}/>
+          <div style={S.statGrid}>
+            <div style={B.stat("#22c55e")}><div style={B.statLabel}>Income this month</div><div style={B.statValue("#22c55e")}>{fmt(totalIncome,currency)}</div></div>
+            <div style={B.stat("#f43f5e")}><div style={B.statLabel}>Spent this month</div><div style={B.statValue("#f43f5e")}>{fmt(totalExpenses,currency)}</div></div>
+            <div style={B.stat(net>=0?"#a78bfa":"#fb923c")}><div style={B.statLabel}>Net this month</div><div style={B.statValue(net>=0?"#a78bfa":"#fb923c")}>{fmt(net,currency)}</div></div>
+            <div style={B.stat("#38bdf8")}><div style={B.statLabel}>Portfolio value</div><div style={B.statValue("#38bdf8")}>{fmt(totalPortfolio,currency)}</div></div>
+          </div>
+          <div style={B.card}>
+            <div style={B.cardTitle}>Income vs Expenses — 6 months</div>
+            <ResponsiveContainer width="100%" height={160}>
+              <BarChart data={trendData} barSize={10}>
+                <XAxis dataKey="month" tick={{fill:"#6366f1",fontSize:10}} axisLine={false} tickLine={false}/>
+                <YAxis hide/><Tooltip contentStyle={{background:"#1a1a2e",border:"1px solid #312e81",borderRadius:8,color:"#e2e8f0",fontSize:12}} formatter={v=>`${CURRENCY[currency]?.symbol||"₹"}${Math.round(v).toLocaleString()}`}/>
+                <Bar dataKey="income" fill="#6366f1" radius={[3,3,0,0]} name="Income"/>
+                <Bar dataKey="expenses" fill="#f43f5e" radius={[3,3,0,0]} name="Expenses"/>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          {data.savingsGoals.length>0&&<div style={B.card}>
+            <div style={B.cardTitle}>Savings Goals</div>
+            {data.savingsGoals.map(g=>{const pct=Math.round((g.saved/g.target)*100);return(
+              <div key={g.id} style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}><span style={{color:"#c4b5fd"}}>{g.name}</span><span style={{color:"#818cf8"}}>{pct}%</span></div>
+                <div style={S.progressBar}><div style={S.progressFill(pct)}/></div>
+                <div style={{fontSize:11,color:"#6366f1",marginTop:4}}>{fmt(g.saved,currency)} of {fmt(g.target,currency)}</div>
+              </div>
+            );})}
+          </div>}
+        </>}
+
+        {tab==="spending"&&<>
+          <div style={{display:"flex",background:"#12122a",borderRadius:8,overflow:"hidden",border:"1px solid #312e81",marginBottom:12}}>
+            <button style={S.subTab(spendSub==="add")} onClick={()=>setSpendSub("add")}>Add / Log</button>
+            <button style={S.subTab(spendSub==="breakdown")} onClick={()=>setSpendSub("breakdown")}>📊 Breakdown</button>
+          </div>
+          {spendSub==="add"&&<>
+            <div style={B.card}>
+              <div style={B.cardTitle}>Add expense manually</div>
+              <div style={B.row2}><input style={{...B.input,flex:1}} placeholder={`Amount (${currency})`} type="number" value={expForm.amount} onChange={e=>setExpForm({...expForm,amount:e.target.value})}/><input style={{...B.input,flex:1}} type="month" value={expForm.month} onChange={e=>setExpForm({...expForm,month:e.target.value})}/></div>
+              <select style={B.select} value={expForm.category} onChange={e=>setExpForm({...expForm,category:e.target.value})}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
+              <input style={B.input} placeholder="Note / merchant" value={expForm.note} onChange={e=>setExpForm({...expForm,note:e.target.value})}/>
+              <button style={B.btn} onClick={addExpense}>Add Expense</button>
+            </div>
+            {expByCategory.length>0&&<div style={B.card}>
+              <div style={B.cardTitle}>This month by category</div>
+              <ResponsiveContainer width="100%" height={160}><PieChart><Pie data={expByCategory} cx="50%" cy="50%" innerRadius={45} outerRadius={70} dataKey="value" paddingAngle={3}>{expByCategory.map((e,i)=><Cell key={i} fill={e.color}/>)}</Pie><Tooltip contentStyle={{background:"#1a1a2e",border:"1px solid #312e81",borderRadius:8,color:"#e2e8f0",fontSize:12}} formatter={v=>fmt(v,currency)}/></PieChart></ResponsiveContainer>
+              {expByCategory.map((c,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}><div style={{width:8,height:8,borderRadius:2,background:c.color,flexShrink:0}}/><span style={{fontSize:12,color:"#c4b5fd",flex:1}}>{c.name}</span><span style={{fontSize:12,color:"#e2e8f0"}}>{fmt(c.value,currency)}</span></div>)}
+            </div>}
+            <div style={B.card}>
+              <div style={B.cardTitle}>Recent expenses</div>
+              {data.expenses.length===0&&<div style={{color:"#4f46e5",fontSize:13}}>No expenses yet</div>}
+              {[...data.expenses].reverse().slice(0,20).map(e=>(
+                <div key={e.id} style={B.row}>
+                  <div><div style={{fontSize:13,color:"#e2e8f0"}}>{e.item||e.note||e.category}</div><div style={{fontSize:11,color:"#6366f1",marginTop:2}}>{shortDate(e.date||e.month+"-01")}{e.merchant&&e.merchant!=="Manual"&&<span style={{marginLeft:6,color:"#818cf8"}}>· {e.merchant}</span>}<span style={{marginLeft:6}}><span style={B.badge(catColor(e.category))}>{e.category}</span></span></div></div>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{color:"#f43f5e",fontWeight:600,fontSize:14}}>{fmt(e.amount,currency)}</span><button style={B.delBtn} onClick={()=>deleteItem("expenses",e.id)}>×</button></div>
+                </div>
+              ))}
+            </div>
+          </>}
+          {spendSub==="breakdown"&&<BreakdownView expenses={data.expenses} currency={currency}/>}
+        </>}
+
+        {tab==="income"&&(()=>{
+          const thisM = todayMonth();
+          const incThisMonth = data.income.filter(x=>x.month===thisM).reduce((a,b)=>a+b.amount,0);
+          const incLastMonth = (()=>{const d=new Date();d.setMonth(d.getMonth()-1);const m=d.toISOString().slice(0,7);return data.income.filter(x=>x.month===m).reduce((a,b)=>a+b.amount,0);})();
+          const monthlyRecTotal=(data.recurringIncome||[]).filter(r=>r.frequency==="monthly").reduce((a,r)=>a+r.amount,0);
+          const sym=CURRENCY[currency]?.symbol||"₹"; const rate=CURRENCY[currency]?.rate||1;
+          return(<>
+            {/* Summary cards */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+              <div style={B.stat("#22c55e")}><div style={B.statLabel}>This month</div><div style={B.statValue("#22c55e")}>{fmt(incThisMonth,currency)}</div></div>
+              <div style={B.stat("#a78bfa")}><div style={B.statLabel}>Last month</div><div style={B.statValue("#a78bfa")}>{fmt(incLastMonth,currency)}</div></div>
+            </div>
+            {monthlyRecTotal>0&&<div style={{...B.card,background:"linear-gradient(135deg,#052e16,#14532d)",border:"1px solid #166534",marginBottom:12}}>
+              <div style={{fontSize:11,color:"#4ade80",marginBottom:2}}>Monthly recurring income set up</div>
+              <div style={{fontSize:20,fontWeight:700,color:"#22c55e"}}>{sym}{Math.round(monthlyRecTotal*rate).toLocaleString()}<span style={{fontSize:12,color:"#4ade80",fontWeight:400}}> /month</span></div>
+            </div>}
+
+            {/* Sub tabs */}
+            <div style={{display:"flex",background:"#12122a",borderRadius:8,overflow:"hidden",border:"1px solid #312e81",marginBottom:12}}>
+              <button style={S.subTab(incSubTab==="manual")}    onClick={()=>setIncSubTab("manual")}>➕ Manual</button>
+              <button style={S.subTab(incSubTab==="recurring")} onClick={()=>setIncSubTab("recurring")}>🔁 Recurring</button>
+              <button style={S.subTab(incSubTab==="history")}   onClick={()=>setIncSubTab("history")}>📋 History</button>
+            </div>
+
+            {/* MANUAL */}
+            {incSubTab==="manual"&&<>
+              <div style={B.card}>
+                <div style={B.cardTitle}>Log income</div>
+                <div style={{fontSize:12,color:"#6366f1",marginBottom:10}}>For one-off or variable income — bonus, freelance, overtime, rental etc.</div>
+                <div style={B.row2}>
+                  <input style={{...B.input,flex:1}} placeholder={`Amount (${currency})`} type="number" value={incForm.amount} onChange={e=>setIncForm({...incForm,amount:e.target.value})}/>
+                  <input style={{...B.input,flex:1}} type="month" value={incForm.month} onChange={e=>setIncForm({...incForm,month:e.target.value})}/>
+                </div>
+                <input style={B.input} placeholder="Source (e.g. Salary, Bonus, Freelance, Rental)" value={incForm.source} onChange={e=>setIncForm({...incForm,source:e.target.value})}/>
+                <button style={{...B.btn,background:"linear-gradient(135deg,#166534,#16a34a)"}} onClick={addIncome}>+ Add Income</button>
+              </div>
+              {/* Quick-log recurring */}
+              {(data.recurringIncome||[]).length>0&&<div style={B.card}>
+                <div style={B.cardTitle}>Quick-log recurring this month</div>
+                <div style={{fontSize:12,color:"#6366f1",marginBottom:10}}>Tap to instantly log your regular income sources for {thisM}</div>
+                {(data.recurringIncome||[]).map(r=>{
+                  const alreadyLogged=data.income.some(i=>i.month===thisM&&i.source===r.source&&i.recurring===true);
+                  return(
+                    <div key={r.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid #1e1b4b"}}>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,color:"#e2e8f0"}}>{r.source}</div>
+                        <div style={{fontSize:11,color:"#6366f1",marginTop:2}}><span style={B.badge("#22c55e")}>{FREQ_LABELS[r.frequency]}</span><span style={{marginLeft:6,color:"#818cf8"}}>{sym}{Math.round(r.amount*rate).toLocaleString()}</span></div>
+                      </div>
+                      {alreadyLogged
+                        ?<span style={{fontSize:11,color:"#22c55e",fontWeight:600}}>✓ Logged</span>
+                        :<button onClick={()=>logRecurringIncomeNow(r)} style={{background:"linear-gradient(135deg,#166534,#16a34a)",border:"none",borderRadius:6,color:"#fff",padding:"6px 12px",fontSize:12,fontWeight:600,cursor:"pointer"}}>Log now</button>}
+                    </div>
+                  );
+                })}
+              </div>}
+            </>}
+
+            {/* RECURRING */}
+            {incSubTab==="recurring"&&<>
+              <div style={B.card}>
+                <div style={B.cardTitle}>Add recurring income source</div>
+                <div style={{fontSize:12,color:"#6366f1",marginBottom:10}}>Set up salary, pension, rental, SIP returns etc. once — then log with one tap each month.</div>
+                <input style={B.input} placeholder="Source name (e.g. DLF Salary, Rental income)" value={incForm.source} onChange={e=>setIncForm({...incForm,source:e.target.value})}/>
+                <div style={B.row2}>
+                  <input style={{...B.input,flex:1}} placeholder={`Amount (${currency})`} type="number" value={incForm.amount} onChange={e=>setIncForm({...incForm,amount:e.target.value})}/>
+                  <select style={{...B.select,flex:1}} value={incForm.frequency||"monthly"} onChange={e=>setIncForm({...incForm,frequency:e.target.value})}>
+                    <option value="monthly">Monthly</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="yearly">Yearly</option>
+                  </select>
+                </div>
+                <textarea style={B.textarea} placeholder="Notes (optional — e.g. net after tax, includes HRA)" value={incForm.notes||""} onChange={e=>setIncForm({...incForm,notes:e.target.value})}/>
+                <button style={{...B.btn,background:"linear-gradient(135deg,#166534,#16a34a)"}} onClick={()=>{
+                  if(!incForm.source||!incForm.amount)return;
+                  addRecurringIncome({id:Date.now(),source:incForm.source,amount:parseFloat(incForm.amount),frequency:incForm.frequency||"monthly",notes:incForm.notes||""});
+                  setIncForm({amount:"",source:"",month:todayMonth(),notes:"",frequency:"monthly"});
+                }}>Add Recurring Source</button>
+              </div>
+
+              {(data.recurringIncome||[]).length===0&&<div style={{...B.card,color:"#4f46e5",fontSize:13}}>No recurring income set up yet. Add your salary, rental income, etc. above.</div>}
+              {(data.recurringIncome||[]).map(r=>(
+                <div key={r.id} style={B.card}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                    <div>
+                      <div style={{fontSize:14,fontWeight:600,color:"#c4b5fd"}}>{r.source}</div>
+                      <div style={{fontSize:11,color:"#6366f1",marginTop:2}}><span style={B.badge("#22c55e")}>{FREQ_LABELS[r.frequency]}</span></div>
+                      {r.notes&&<div style={{fontSize:11,color:"#4f46e5",marginTop:4}}>{r.notes}</div>}
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontWeight:700,color:"#22c55e",fontSize:15}}>{sym}{Math.round(r.amount*rate).toLocaleString()}</div>
+                      <button style={B.delBtn} onClick={()=>deleteRecurringIncome(r.id)}>×</button>
+                    </div>
+                  </div>
+                  <button onClick={()=>logRecurringIncomeNow(r)} style={{marginTop:10,width:"100%",background:"#12122a",border:"1px solid #22c55e",borderRadius:7,color:"#22c55e",padding:"7px",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                    ✓ Log for this month
+                  </button>
+                </div>
+              ))}
+            </>}
+
+            {/* HISTORY */}
+            {incSubTab==="history"&&<>
+              {data.income.length===0&&<div style={{...B.card,color:"#4f46e5",fontSize:13}}>No income logged yet.</div>}
+              {/* Group by month */}
+              {(()=>{
+                const byMonth={};
+                data.income.forEach(i=>{if(!byMonth[i.month])byMonth[i.month]=[];byMonth[i.month].push(i);});
+                return Object.entries(byMonth).sort((a,b)=>b[0].localeCompare(a[0])).map(([month,entries])=>{
+                  const total=entries.reduce((s,e)=>s+e.amount,0);
+                  return(
+                    <div key={month} style={B.card}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                        <div style={{fontSize:13,fontWeight:700,color:"#c4b5fd"}}>{month}</div>
+                        <div style={{fontSize:15,fontWeight:700,color:"#22c55e"}}>{fmt(total,currency)}</div>
+                      </div>
+                      {entries.map(i=>(
+                        <div key={i.id} style={B.row}>
+                          <div>
+                            <div style={{fontSize:13,color:"#e2e8f0"}}>{i.source||"Income"}</div>
+                            <div style={{fontSize:11,color:"#6366f1",marginTop:1}}>{i.recurring&&<span style={{...B.badge("#22c55e"),marginRight:4}}>Recurring</span>}{i.month}</div>
+                          </div>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <span style={{color:"#22c55e",fontWeight:600,fontSize:14}}>{fmt(i.amount,currency)}</span>
+                            <button style={B.delBtn} onClick={()=>deleteItem("income",i.id)}>×</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                });
+              })()}
+            </>}
+          </>);
+        })()}
+
+        {tab==="savings"&&<>
+          <div style={B.card}>
+            <div style={B.cardTitle}>Add savings goal</div>
+            <input style={B.input} placeholder="Goal name (e.g. House deposit, Emergency fund)" value={goalForm.name} onChange={e=>setGoalForm({...goalForm,name:e.target.value})}/>
+            <div style={B.row2}><input style={{...B.input,flex:1}} placeholder={`Target (${currency})`} type="number" value={goalForm.target} onChange={e=>setGoalForm({...goalForm,target:e.target.value})}/><input style={{...B.input,flex:1}} placeholder="Already saved" type="number" value={goalForm.saved} onChange={e=>setGoalForm({...goalForm,saved:e.target.value})}/></div>
+            <input style={B.input} placeholder="Target date (optional)" type="month" value={goalForm.deadline} onChange={e=>setGoalForm({...goalForm,deadline:e.target.value})}/>
+            <button style={B.btn} onClick={addGoal}>Add Goal</button>
+          </div>
+          {data.savingsGoals.length===0&&<div style={{...B.card,color:"#4f46e5",fontSize:13}}>No goals yet.</div>}
+          {data.savingsGoals.map(g=>{const pct=Math.round((g.saved/g.target)*100);return(
+            <div key={g.id} style={B.card}>
+              <div style={{display:"flex",justifyContent:"space-between"}}><div style={{fontSize:15,fontWeight:600,color:"#c4b5fd"}}>{g.name}</div><button style={B.delBtn} onClick={()=>deleteItem("savingsGoals",g.id)}>×</button></div>
+              {g.deadline&&<div style={{fontSize:11,color:"#6366f1",marginBottom:6}}>Target: {g.deadline}</div>}
+              <div style={S.progressBar}><div style={S.progressFill(pct)}/></div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginTop:6}}><span style={{color:"#818cf8"}}>{fmt(g.saved,currency)} saved</span><span style={{color:pct>=100?"#22c55e":"#a78bfa",fontWeight:600}}>{pct}% of {fmt(g.target,currency)}</span></div>
+              <div style={{marginTop:10}}><div style={{fontSize:11,color:"#6366f1",marginBottom:4}}>Update saved amount</div><input style={{...B.input,marginBottom:0}} type="number" defaultValue={g.saved} onBlur={e=>updateGoalSaved(g.id,e.target.value)}/></div>
+            </div>
+          );})}
+        </>}
+
+        {tab==="investments"&&<>
+          <div style={S.statGrid}>
+            <div style={B.stat("#38bdf8")}><div style={B.statLabel}>Portfolio value</div><div style={B.statValue("#38bdf8")}>{fmt(totalPortfolio,currency)}</div></div>
+            <div style={B.stat(portfolioGain>=0?"#22c55e":"#f43f5e")}><div style={B.statLabel}>Total gain/loss</div><div style={B.statValue(portfolioGain>=0?"#22c55e":"#f43f5e")}>{portfolioGain>=0?"+":""}{fmt(portfolioGain,currency)}</div></div>
+          </div>
+          <div style={{display:"flex",background:"#12122a",borderRadius:8,overflow:"hidden",border:"1px solid #312e81",marginBottom:12}}>
+            <button style={S.subTab(invSubTab==="holdings")} onClick={()=>setInvSubTab("holdings")}>Holdings</button>
+            <button style={S.subTab(invSubTab==="performance")} onClick={()=>setInvSubTab("performance")}>📈 Performance</button>
+          </div>
+          {invSubTab==="holdings"&&<>
+            <div style={B.card}>
+              <div style={B.cardTitle}>Add investment manually</div>
+              <input style={B.input} placeholder="Name (e.g. Nifty 50 Index Fund)" value={invForm.name} onChange={e=>setInvForm({...invForm,name:e.target.value})}/>
+              <select style={B.select} value={invForm.type} onChange={e=>setInvForm({...invForm,type:e.target.value})}>{["Mutual Fund","ETF","Stocks","Crypto","Fixed Deposit","PF/EPF","Other"].map(t=><option key={t}>{t}</option>)}</select>
+              <div style={B.row2}><input style={{...B.input,flex:1}} placeholder={`Invested (${currency})`} type="number" value={invForm.invested} onChange={e=>setInvForm({...invForm,invested:e.target.value})}/><input style={{...B.input,flex:1}} placeholder="Current value" type="number" value={invForm.value} onChange={e=>setInvForm({...invForm,value:e.target.value})}/></div>
+              <button style={B.btn} onClick={addInvestmentManual}>Add Investment</button>
+            </div>
+            {data.investments.length===0&&<div style={{...B.card,color:"#4f46e5",fontSize:13}}>No investments yet.</div>}
+            {data.investments.map((inv,i)=>{const ls=[...(inv.snapshots||[])].sort((a,b)=>b.date.localeCompare(a.date))[0];const cur=ls?.value||0;const gain=cur-(inv.invested||0);const pct=inv.invested>0?((gain/inv.invested)*100).toFixed(1):null;return(
+              <div key={inv.id} style={B.card}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                  <div><div style={{fontSize:14,fontWeight:600,color:"#c4b5fd"}}>{inv.name}</div><div style={{fontSize:11,color:"#6366f1",marginTop:2}}><span style={B.badge("#38bdf8")}>{inv.type}</span>{ls&&<span style={{color:"#4f46e5",marginLeft:6}}>last: {shortDate(ls.date)}</span>}</div></div>
+                  <button style={B.delBtn} onClick={()=>deleteItem("investments",inv.id)}>×</button>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:10,fontSize:13}}>
+                  <div><div style={{color:"#818cf8",fontSize:10,marginBottom:2}}>INVESTED</div><div style={{color:"#e2e8f0"}}>{fmt(inv.invested||0,currency)}</div></div>
+                  <div><div style={{color:"#818cf8",fontSize:10,marginBottom:2}}>CURRENT</div><div style={{color:"#38bdf8",fontWeight:700}}>{fmt(cur,currency)}</div></div>
+                  <div><div style={{color:"#818cf8",fontSize:10,marginBottom:2}}>RETURN</div><div style={{color:gain>=0?"#22c55e":"#f43f5e",fontWeight:700}}>{pct?`${gain>=0?"+":""}${pct}%`:"—"}</div></div>
+                </div>
+              </div>
+            );})}
+          </>}
+          {invSubTab==="performance"&&<PerformanceChart investments={data.investments} currency={currency} investmentNotes={data.investmentNotes||{}} onSaveNote={saveInvestmentNote}/>}
+        </>}
+
+        {tab==="tools"&&<>
+          <div style={{display:"flex",gap:0,overflowX:"auto",background:"#12122a",borderRadius:8,border:"1px solid #312e81",marginBottom:12}}>
+            {TOOLS_TABS.map(([k,v])=><button key={k} onClick={()=>setToolsTab(k)} style={{padding:"8px 10px",border:"none",background:toolsTab===k?"#1e1b4b":"transparent",color:toolsTab===k?"#a78bfa":"#6366f1",fontSize:11,fontWeight:toolsTab===k?700:400,cursor:"pointer",borderBottom:toolsTab===k?"2px solid #a78bfa":"2px solid transparent",whiteSpace:"nowrap"}}>{v}</button>)}
+          </div>
+          {toolsTab==="converter"&&<CurrencyConverter/>}
+          {toolsTab==="budget"&&<BudgetLimits data={data} currency={currency} onSave={saveBudgetLimits}/>}
+          {toolsTab==="recurring"&&<RecurringExpenses data={data} currency={currency} onAdd={addRecurring} onDelete={deleteRecurring} onLogNow={logRecurringNow}/>}
+          {toolsTab==="networth"&&<NetWorthTracker data={data} currency={currency}/>}
+          {toolsTab==="export"&&<ExportPanel data={data}/>}
+        </>}
+      </div>
+    </div>
+  );
+}
+
+
+    // Mount app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<FinanceTracker />);
+  </script>
+</body>
+</html>
