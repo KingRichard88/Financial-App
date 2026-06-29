@@ -12,70 +12,71 @@
   <link rel="apple-touch-icon" href="icon-192.png"/>
   <title>Finance Tracker</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    html, body, #root { height: 100%; background: #0f0f1a; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; overscroll-behavior: none; }
-    input, select, textarea, button { font-family: inherit; }
-    /* Safe area for iPhone notch/home bar */
-    #root { padding-bottom: env(safe-area-inset-bottom); }
-    /* Scrollbar hidden on mobile */
-    ::-webkit-scrollbar { display: none; }
-    /* Install prompt */
-    #install-banner { display:none; position:fixed; bottom:80px; left:16px; right:16px; background:linear-gradient(135deg,#4c1d95,#312e81); border:1px solid #6366f1; border-radius:12px; padding:14px 16px; z-index:1000; flex-direction:row; align-items:center; gap:12px; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
-    #install-banner.show { display:flex; }
-    #install-banner p { color:#e2e8f0; font-size:13px; flex:1; line-height:1.4; }
-    #install-banner button { background:linear-gradient(135deg,#6366f1,#8b5cf6); border:none; border-radius:8px; color:#fff; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
-    #install-dismiss { background:transparent!important; color:#818cf8!important; padding:4px 8px!important; font-size:18px!important; }
+    *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    html,body,#root{height:100%;background:#0f0f1a}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Inter",system-ui,sans-serif;overscroll-behavior:none}
+    input,select,textarea,button{font-family:inherit}
+    #root{padding-bottom:env(safe-area-inset-bottom)}
+    ::-webkit-scrollbar{display:none}
+    #splash{position:fixed;inset:0;background:#0f0f1a;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;transition:opacity 0.3s}
+    #splash.hide{opacity:0;pointer-events:none}
+    .spin{width:44px;height:44px;border:3px solid #312e81;border-top:3px solid #a78bfa;border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:16px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .splash-title{color:#a78bfa;font-size:20px;font-weight:700;margin-bottom:8px}
+    .splash-sub{color:#6366f1;font-size:13px}
+    #install-banner{display:none;position:fixed;bottom:80px;left:16px;right:16px;background:linear-gradient(135deg,#4c1d95,#312e81);border:1px solid #6366f1;border-radius:12px;padding:14px 16px;z-index:1000;flex-direction:row;align-items:center;gap:12px;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
+    #install-banner.show{display:flex}
+    #install-banner p{color:#e2e8f0;font-size:13px;flex:1;line-height:1.4}
+    #install-banner button{background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;border-radius:8px;color:#fff;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+    #install-dismiss{background:transparent!important;color:#818cf8!important;padding:4px 8px!important;font-size:20px!important}
   </style>
 </head>
 <body>
-  <div id="root"></div>
-
-  <!-- Install banner -->
-  <div id="install-banner">
-    <p>📲 Install Finance Tracker as an app on your phone</p>
-    <button id="install-btn">Install</button>
-    <button id="install-dismiss" class="">✕</button>
+  <div id="splash">
+    <div class="spin"></div>
+    <div class="splash-title">Finance Tracker</div>
+    <div class="splash-sub">Loading…</div>
   </div>
-
-  <!-- React + Babel + Recharts via CDN -->
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <div id="root"></div>
+  <div id="install-banner">
+    <p>📲 Install Finance Tracker as an app</p>
+    <button id="install-btn">Install</button>
+    <button id="install-dismiss">✕</button>
+  </div>
 
   <script>
     // PWA install prompt
     let deferredPrompt;
-    window.addEventListener('beforeinstallprompt', e => {
-      e.preventDefault();
-      deferredPrompt = e;
+    window.addEventListener('beforeinstallprompt',e=>{
+      e.preventDefault(); deferredPrompt=e;
       document.getElementById('install-banner').classList.add('show');
     });
-    document.getElementById('install-btn')?.addEventListener('click', async () => {
-      if (!deferredPrompt) return;
+    document.getElementById('install-btn').addEventListener('click',async()=>{
+      if(!deferredPrompt)return;
       deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      deferredPrompt = null;
+      await deferredPrompt.userChoice;
+      deferredPrompt=null;
       document.getElementById('install-banner').classList.remove('show');
     });
-    document.getElementById('install-dismiss')?.addEventListener('click', () => {
+    document.getElementById('install-dismiss').addEventListener('click',()=>{
       document.getElementById('install-banner').classList.remove('show');
     });
-
-    // Service worker
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+    if('serviceWorker'in navigator){
+      window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
     }
   </script>
 
-  <script type="text/babel">
-    // Destructure React hooks
-    const { useState, useEffect, useCallback, useRef } = React;
+  <!-- Load React, ReactDOM, Recharts from unpkg -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js" crossorigin></script>
 
-    // Destructure Recharts
-    const { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
-            ResponsiveContainer, LineChart, Line } = Recharts;
+  <!-- Babel to compile JSX in browser -->
+  <script src="https://unpkg.com/@babel/standalone@7.23.2/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="react">
+    const {useState,useEffect,useCallback,useRef}=React;
+    const {PieChart,Pie,Cell,BarChart,Bar,XAxis,YAxis,Tooltip,ResponsiveContainer,LineChart,Line}=Recharts;
 
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
@@ -1259,9 +1260,17 @@ function FinanceTracker() {
 }
 
 
-    // Mount app
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<FinanceTracker />);
+    const container=document.getElementById('root');
+    const root=ReactDOM.createRoot(container);
+    root.render(<FinanceTracker/>);
+
+    // Hide splash once React has rendered
+    requestAnimationFrame(()=>{
+      setTimeout(()=>{
+        const splash=document.getElementById('splash');
+        if(splash){splash.classList.add('hide');setTimeout(()=>splash.remove(),400);}
+      }, 800);
+    });
   </script>
 </body>
 </html>
